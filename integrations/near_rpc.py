@@ -57,3 +57,20 @@ class NearRpc:
             return json.loads(bytes(res["result"]).decode())
         except (KeyError, TypeError, ValueError) as e:
             raise NearRpcUnavailable("undecodable view result") from e
+
+    def status(self):
+        """Node status: {"chain_id", "protocol_version", ...}. Validates the fields the preflight relies on."""
+        res = self._call("status", [])
+        if (not isinstance(res, dict) or not isinstance(res.get("chain_id"), str)
+                or not isinstance(res.get("protocol_version"), int) or isinstance(res.get("protocol_version"), bool)):
+            raise NearRpcUnavailable("unexpected status shape")
+        return res
+
+    def view_account(self, account_id, finality="final"):
+        """Account summary ({"amount", "code_hash", "storage_usage", ...}); NearRpcError if it does not exist."""
+        res = self._call("query", {"request_type": "view_account", "finality": finality, "account_id": account_id})
+        if not isinstance(res, dict):
+            raise NearRpcUnavailable("unexpected result shape")
+        if res.get("error"):
+            raise NearRpcError(str(res["error"])[:300])
+        return res

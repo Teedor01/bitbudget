@@ -14,6 +14,25 @@ from integrations.record_store import RecordStore
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 
+MIN_PROTOCOL_VERSION = 88   
+
+
+def preflight(rpc: NearRpc, expect_chain="testnet", min_protocol=MIN_PROTOCOL_VERSION):
+    """Returns a list of problems (empty = OK). Read-only. Checks the chain id and that the network's active
+    protocol version is at least the one the contract's near-sdk requires."""
+    try:
+        st = rpc.status()
+    except (NearRpcUnavailable, NearRpcError) as e:
+        return ["cannot read node status: %s" % e]
+    out = []
+    if st["chain_id"] != expect_chain:
+        out.append("chain_id is %r, expected %r" % (st["chain_id"], expect_chain))
+    if st["protocol_version"] < min_protocol:
+        out.append("protocol_version %d < %d required by near-sdk 5.30.0 (build with an older near-sdk/Rust instead)"
+                   % (st["protocol_version"], min_protocol))
+    return out
+
+
 class AnchorIntegrityError(GateConfigError):
     """The chain head and the local record store disagree, or the chain belongs to another scope/policy."""
 
@@ -32,16 +51,22 @@ class TxSender(ABC):
 class NearCliSender(TxSender):
     """Calls `near contract call-function as-transaction ...` (near-cli-rs) with sign-with-keychain.
     argv syntax follows the near-cli-rs docs; it has NOT been executed here (see NEAR_EVIDENCE.md)."""
+    SIGN_MODES = ("keychain", "legacy-keychain")        # never plaintext keys on a command line
+
     def __init__(self, contract_id, signer_id, network="testnet", cli="near", gas="30 TeraGas",
-                 runner=subprocess.run, timeout=120.0):
+                 runner=subprocess.run, timeout=120.0, sign_with="keychain"):
+        if sign_with not in self.SIGN_MODES:
+            raise ValueError("sign_with must be one of %r" % (self.SIGN_MODES,))
+        self.sign_with = sign_with
         self.contract_id, self.signer_id, self.network = contract_id, signer_id, network
         self.cli, self.gas, self._run, self.timeout = cli, gas, runner, timeout
+        self.last = None            
 
     def argv(self, args: dict):
         return [self.cli, "contract", "call-function", "as-transaction", self.contract_id, "cas",
                 "json-args", json.dumps(args, separators=(",", ":")), "prepaid-gas", self.gas,
                 "attached-deposit", "0 NEAR", "sign-as", self.signer_id, "network-config", self.network,
-                "sign-with-keychain", "send"]
+                "sign-with-" + self.sign_with, "send"]
 
     def send_cas(self, args):
         try:
@@ -50,6 +75,9 @@ class NearCliSender(TxSender):
             raise SenderNotSent(str(e)) from e
         except subprocess.TimeoutExpired:
             return False
+        err = r.stderr if isinstance(getattr(r, "stderr", None), (bytes, str)) else b""
+        err = err.decode(errors="replace") if isinstance(err, bytes) else err
+        self.last = (r.returncode, err[-300:])
         return r.returncode == 0
 
 
@@ -86,6 +114,22 @@ class NearAnchor(Anchor):
             raise AnchorIntegrityError("stored record does not match the chain head")
         return rec
 
+    @property
+    def version(self) -> int:
+        """Version of the chain head (read at finality=final, verified against the record store)."""
+        return self.read().header.version
+
+    def history(self, limit=64):
+        """Records from the oldest locally stored one up to the head, oldest first, by following prev_digest
+        through the record store. Read-only; never exposes more than the store already holds."""
+        out, rec = [], self.read()
+        while rec is not None and len(out) < limit:
+            out.append(rec)
+            if rec.header.version == 0:
+                break
+            rec = self.store.get(rec.header.prev_digest)
+        return list(reversed(out))
+
     # ---- guarded write ----
     def compare_and_swap(self, writer_key, expected_version, expected_digest, new_record) -> CasResult:
         if writer_key != self.writer_key:
@@ -95,11 +139,11 @@ class NearAnchor(Anchor):
                 or h.scope_id != self.scope_id or h.policy_digest != self.policy_digest):
             return CasResult.MALFORMED
         new_digest = new_record.digest()
-        self.store.put(new_record)                      
+        self.store.put(new_record)                     
         args = {"expected_version": expected_version, "expected_digest": expected_digest,
                 "new_digest": new_digest, "header": json.dumps(header_to_dict(h), separators=(",", ":"))}
         try:
-            self.sender.send_cas(args)                 
+            self.sender.send_cas(args)                
         except SenderNotSent as e:
             raise AnchorUnavailable(str(e)) from e
         return self._resolve(expected_version, h.version, new_digest)
