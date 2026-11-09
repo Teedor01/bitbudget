@@ -6,19 +6,19 @@ import types
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-from core.gate import Gate                                    
-from core.interfaces import AnchorUnavailable, GateConfigError  
+from core.gate import Gate                                   
+from core.interfaces import AnchorUnavailable, GateConfigError   
 from core.policy import Policy                                
 from core.records import make_genesis, policy_digest          
 from harness.system import DEMO_POLICY, FIXTURE_SECRET, WRITER_KEY, Client   
 from core.interfaces import CasResult                         
-from core.records import Header, Record                       
+from core.records import Header, Record                        
 from integrations.near_anchor import NearAnchor, NearCliSender, TxSender, preflight   
-from integrations.near_rpc import NearRpc                      
+from integrations.near_rpc import NearRpc                     
 from integrations.record_store import DirRecordStore           
-from testdoubles.hmac_auth import HmacTestAuthenticator        
+from testdoubles.hmac_auth import HmacTestAuthenticator       
 from testdoubles.mock_credential import MockCredential         
-from testdoubles.test_sealer import UnsealedTestSealer         
+from testdoubles.test_sealer import UnsealedTestSealer        
 
 VERIFIERS = ("V1", "V2", "V3")
 DEFAULT_RPC = "https://test.rpc.fastnear.com"
