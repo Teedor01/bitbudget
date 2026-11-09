@@ -34,7 +34,7 @@ class PolicyBoundaries(unittest.TestCase):
         self.assertEqual(iv.size, 20_000)
         self.assertEqual(decide(P, iv, a + 9_998).kind, Kind.REFUSED)       
         self.assertEqual(decide(P, iv, a + 9_999).kind, Kind.INFORMATIVE)   
-        self.assertEqual(decide(P, iv, a + 10_000).kind, Kind.REFUSED)     
+        self.assertEqual(decide(P, iv, a + 10_000).kind, Kind.REFUSED)      
         self.assertEqual(branches(iv, a + 9_999)[0].size, 10_000)
         self.assertEqual(branches(iv, a + 9_999)[1].size, 10_000)
 
@@ -60,7 +60,7 @@ class PolicyBoundaries(unittest.TestCase):
                     dict(lo=0, hi=999, W=10, K=0), dict(lo=0, hi=999, W=10, R=0), dict(lo=0, hi=999.0, W=10)):
             with self.assertRaises(ValueError):
                 Policy(**bad)
-        Policy(0, 19_999, 10_000)                         
+        Policy(0, 19_999, 10_000)                          
 
     def test_T_P07_integers_only_and_static_scan(self):
         for bad in (5.0, True):
@@ -81,13 +81,13 @@ class PolicyBoundaries(unittest.TestCase):
         Pk = Policy(0, 999_999, 10_000, K=2, R=3)
         self.assertEqual(kr(Pk, FULL, 500_000, 0)[0], Kind.INFORMATIVE)
         self.assertEqual(kr(Pk, FULL, 500_000, 2), (Kind.REFUSED, Reason.CAP, None))
-        self.assertEqual(decide(Pk, FULL, 1_500_000, 2).kind, Kind.DETERMINED)   
+        self.assertEqual(decide(Pk, FULL, 1_500_000, 2).kind, Kind.DETERMINED)  
         # a cap never allows what the floor refuses
         for count in (0, 1, 2, 5):
             self.assertEqual(decide(Pk, FULL, 9_998, count).kind, Kind.REFUSED)
             self.assertEqual(decide(Pk, FULL, 9_998, count).reason, Reason.FLOOR)
         self.assertFalse(quota_exceeded(Pk, 2)); self.assertTrue(quota_exceeded(Pk, 3))
-        self.assertFalse(quota_exceeded(P, 10**9))         
+        self.assertFalse(quota_exceeded(P, 10**9))          
 
 
 if __name__ == "__main__":

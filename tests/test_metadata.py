@@ -63,7 +63,7 @@ class Metadata(unittest.TestCase):
         self.assertTrue(seen <= ALLOWED, seen - ALLOWED)
         self.assertIn(b"REFUSED", seen); self.assertIn(b"ANSWER:1", seen | {b"ANSWER:1"})
         for rec in s.anchor.history():
-            plain = rec.encode()[: len(rec.encode()) - len(rec.sealed_state)]    
+            plain = rec.encode()[: len(rec.encode()) - len(rec.sealed_state)]     
             for word in (b"FLOOR", b"CAP", b"INFORMATIVE", b"DETERMINED", b"YES", b"NO"):
                 self.assertNotIn(word, plain)
         src = pathlib.Path("core/gate.py").read_text()
@@ -105,7 +105,7 @@ class Metadata(unittest.TestCase):
 
     def test_T_M07_blinding_hides_the_threshold_from_a_digest_dictionary_attack(self):
         s = build_system(); t = 654_321
-        req = s.client("V1").make(t)                                        
+        req = s.client("V1").make(t)                                          
         target = req.digest()
         for guess in (b"", b"\x00" * 32):
             hits = [x for x in range(0, 1_000_000)
@@ -145,7 +145,7 @@ class Metadata(unittest.TestCase):
         resp = s.gate.handle(req)
         self.assertNotIn(blind.hex(), repr(req)); self.assertNotIn(req.auth_tag, repr(req)); self.assertNotIn(str(blind), repr(req))
         for rec in s.anchor.history():
-            self.assertNotIn(blind, rec.encode()); self.assertNotIn(blind.hex().encode(), rec.encode())  
+            self.assertNotIn(blind, rec.encode()); self.assertNotIn(blind.hex().encode(), rec.encode())   
         self.assertNotIn(blind, resp.encode())
 
 

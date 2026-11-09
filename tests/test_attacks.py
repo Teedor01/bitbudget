@@ -16,7 +16,7 @@ class Attacks(unittest.TestCase):
     def test_T_A01_stateless_baseline_recovers_exact_value(self):
         value, n = baseline_binary_search(FIXTURE_SECRET, P.lo, P.hi)
         self.assertEqual(value, FIXTURE_SECRET)
-        self.assertEqual(n, math.ceil(math.log2(P.hi - P.lo + 1)))     # 20 queries
+        self.assertEqual(n, math.ceil(math.log2(P.hi - P.lo + 1)))    
         rng = random.Random(1)
         for s in SECRETS + [rng.randint(0, 999_999) for _ in range(50)]:
             v, n = baseline_binary_search(s, P.lo, P.hi)
@@ -30,7 +30,7 @@ class Attacks(unittest.TestCase):
         self.assertGreaterEqual(b - a + 1, P.W)
         self.assertGreaterEqual(gi.size, P.W)
         self.assertTrue(gi.lo <= FIXTURE_SECRET <= gi.hi)
-        self.assertEqual((a, b), (gi.lo, gi.hi))                    
+        self.assertEqual((a, b), (gi.lo, gi.hi))                   
         self.assertGreater(answers, 0)
 
     def test_T_A03_colluding_verifiers_many_secrets(self):
@@ -75,8 +75,8 @@ class Attacks(unittest.TestCase):
             if 990_000 <= t <= 999_998 or t <= 9_998:
                 self.assertEqual(r.kind, "REFUSED", t)
             else:
-                self.assertEqual(r.kind, "ANSWER", t)   
-        self.assertEqual(s.state().interval, Interval(0, 999_999))  
+                self.assertEqual(r.kind, "ANSWER", t)    
+        self.assertEqual(s.state().interval, Interval(0, 999_999))   
 
     def test_T_A06_sybil_verifier_ids_rejected(self):
         s = build_system()
@@ -100,7 +100,7 @@ class Attacks(unittest.TestCase):
         self.assertEqual(s.anchor.version, v)
         c.nonce = 2
         informative = 0
-        for i in range(20):                               
+        for i in range(20):                              
             r = c.ask(500_000)
             informative += r.kind == "ANSWER"
         self.assertEqual(s.state().interval, Interval(0, 500_000))     

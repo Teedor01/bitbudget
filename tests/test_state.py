@@ -31,14 +31,14 @@ class StateMachine(unittest.TestCase):
         r2 = s.gate.handle(req)
         self.assertEqual(r1, r2); self.assertEqual(r2.kind, "ANSWER")
         self.assertEqual((s.anchor.version, s.anchor.cas_calls), (v, cas))
-        self.assertEqual(s.state().verifiers["V1"].requests, 1)               # charged once
+        self.assertEqual(s.state().verifiers["V1"].requests, 1)               
 
     def test_T_S02_same_nonce_different_content_rejected(self):
         s = build_system(); c = s.client("V1")
         req = c.make(500_000, blinding=b"\x07" * 32)
         s.gate.handle(req); v = s.anchor.version
         other_t = c.make(100_000, nonce=1)
-        other_blind = c.make(500_000, nonce=1, blinding=b"\x08" * 32)          # same t, different blinding
+        other_blind = c.make(500_000, nonce=1, blinding=b"\x08" * 32)          
         for r in (other_t, other_blind):
             self.assertEqual(s.gate.handle(r).kind, "REJECTED")
         self.assertEqual(s.anchor.version, v)
@@ -69,7 +69,7 @@ class StateMachine(unittest.TestCase):
         self.assertEqual(kinds, ["ANSWER", "RETRY"])
         self.assertEqual(s.anchor.version, 1)
         loser = out[1] if out[1].kind == "RETRY" else out[2]
-        self.assertIsNone(loser.answer)                                       
+        self.assertIsNone(loser.answer)                                        
 
     def test_T_S05_unknown_outcomes_resolved_by_reread(self):
         s = build_system(); c = s.client("V1")
@@ -88,10 +88,10 @@ class StateMachine(unittest.TestCase):
         s.anchor.inject_cas_fault("unknown_applied", after=lambda: inner.__setitem__("r", g2.handle(req2)))
         r = s.gate.handle(req1)
         self.assertEqual(r.kind, "RETRY"); self.assertIn(inner["r"].kind, ("ANSWER", "REFUSED"))
-        self.assertEqual(s.anchor.version, 2); self.assertEqual(s.anchor.cas_calls, 2)   
+        self.assertEqual(s.anchor.version, 2); self.assertEqual(s.anchor.cas_calls, 2)   # gate1's own + gate2's
         v = s.anchor.version
         again = s.gate.handle(req1)
-        self.assertEqual(again.kind, "ANSWER"); self.assertEqual(s.anchor.version, v)    
+        self.assertEqual(again.kind, "ANSWER"); self.assertEqual(s.anchor.version, v)    # replayed, not re-committed
         self.assertEqual(s.state().verifiers["V1"].requests, 1)
 
     def test_T_S06_anchor_unavailable_fails_closed(self):
@@ -112,7 +112,7 @@ class StateMachine(unittest.TestCase):
         s.anchor.inject_read_fault("stale", version=1)
         r = s.gate.handle(c1.make(120_000))
         self.assertIn(r.kind, ("RETRY", "REJECTED")); self.assertIsNone(r.answer); self.assertEqual(s.anchor.version, 2)
-        self.assertTrue(ok(c1.ask(120_000)))                                    
+        self.assertTrue(ok(c1.ask(120_000)))                                      
 
     def test_T_S08_concurrent_verifiers_single_linear_history(self):
         s = build_system(history_limit=100_000)
@@ -124,7 +124,7 @@ class StateMachine(unittest.TestCase):
         ts = [threading.Thread(target=worker, args=(v, i)) for i, v in enumerate(vids)]
         [t.start() for t in ts]; [t.join() for t in ts]
         committed = sum(1 for v in vids for r in results[v] if ok(r))
-        self.assertEqual(s.anchor.version, committed)                              
+        self.assertEqual(s.anchor.version, committed)                             
         self.assertEqual(audit_chain(s), [])                                       
         self.assertGreaterEqual(s.state().interval.size, DEMO_POLICY.W)
         for v in vids:
@@ -136,7 +136,7 @@ class StateMachine(unittest.TestCase):
         with self.assertRaises(SimulatedCrash):
             s.gate.handle(req)
         self.assertEqual(s.anchor.version, 1)                                      
-        fresh = s.new_gate()                                                       
+        fresh = s.new_gate()                                                      
         r = fresh.handle(req)
         self.assertEqual(r.kind, "ANSWER"); self.assertEqual(s.anchor.version, 1)
 
@@ -207,13 +207,13 @@ class StateMachine(unittest.TestCase):
         kinds = [c1.ask(t).kind for t in (500_000, 250_000, 125_000)]
         self.assertEqual(kinds, ["ANSWER", "ANSWER", "REFUSED"])                   
         self.assertEqual(s.state().verifiers["V1"].informative, 2)
-        self.assertEqual(c2.ask(60_000).kind, "ANSWER")                          
+        self.assertEqual(c2.ask(60_000).kind, "ANSWER")                            
         c1.ask(1_500_000); c1.ask(1_500_000)                                       
         v = s.anchor.version
         self.assertEqual(s.gate.handle(c1.make(1_500_000)).kind, "REJECTED")      
         self.assertEqual(s.anchor.version, v)
         before = s.state().interval
-        t_low, t_high = before.lo + 4_999, before.hi - 5_000    
+        t_low, t_high = before.lo + 4_999, before.hi - 5_000       
         self.assertEqual(c2.ask(t_low).kind, "REFUSED"); self.assertEqual(c2.ask(t_high).kind, "REFUSED")
         self.assertEqual(s.state().interval, before)
 
@@ -255,10 +255,10 @@ class StateMachine(unittest.TestCase):
                         for pv in variants:
                             d1 = decide(pv, iv, t, count)
                             if d0.kind is Kind.REFUSED:
-                                self.assertIs(d1.kind, Kind.REFUSED, (a, b, t, pv))       
+                                self.assertIs(d1.kind, Kind.REFUSED, (a, b, t, pv))        
                             elif d0.kind is Kind.DETERMINED:
                                 self.assertEqual((d1.kind, d1.forced_answer), (d0.kind, d0.forced_answer))
-                            else:                                                         
+                            else:                                                       
                                 self.assertIn(d1.kind, (Kind.INFORMATIVE, Kind.REFUSED))
                                 if pv.K is not None and count >= pv.K:
                                     self.assertIs(d1.kind, Kind.REFUSED)
@@ -275,7 +275,7 @@ class StateMachine(unittest.TestCase):
                 s = build_system(pol); r = s.client("V1").ask(t)
                 self.assertEqual(r.kind, "REFUSED", (K, R, t))
                 self.assertEqual(s.state().interval, Interval(0, 999_999), (K, R, t))
-            for secret, t in ((0, 9_999), (999_999, 989_999)):               
+            for secret, t in ((0, 9_999), (999_999, 989_999)):                   
                 s = build_system(pol, secret=secret); self.assertEqual(s.client("V2").ask(t).kind, "ANSWER")
                 self.assertEqual(s.state().interval.size, pol.W, (K, R, secret))
 
@@ -285,7 +285,7 @@ class StateMachine(unittest.TestCase):
         answered = sum(1 for _ in range(300) if c.ask(random.Random(_).randint(0, 999_999)).kind == "ANSWER")
         self.assertGreater(answered, 5)
         self.assertGreaterEqual(s.state().interval.size, DEMO_POLICY.W)
-        self.assertEqual(s.state().verifiers["V1"].requests, 300)              
+        self.assertEqual(s.state().verifiers["V1"].requests, 300)                 
 
     def test_T_S18_rejections_never_commit(self):
         pol = Policy(0, 999_999, 10_000, R=2)
@@ -293,7 +293,7 @@ class StateMachine(unittest.TestCase):
         v, cas = s.anchor.version, s.anchor.cas_calls
         good = c.make(125_000)
         bad_tag = Request(good.scope_id, good.verifier_id, good.nonce, good.threshold, good.policy_digest, good.blinding, "00" * 32)
-        cases = [bad_tag, c.make(125_000, nonce=0), c.make(125_000, nonce=9), good,        
+        cases = [bad_tag, c.make(125_000, nonce=0), c.make(125_000, nonce=9), good,           
                  Request(s.scope_id, "V9", 1, 5, s.pd, b"\x01" * 32, "00" * 32),
                  c.make(500_000, nonce=2, blinding=b"\x09" * 32)]                             
         for r in cases:
@@ -309,7 +309,7 @@ class StateMachine(unittest.TestCase):
         self.assertEqual(s.anchor.version, v0 + 1)
         self.assertEqual((after.lo, after.hi), (before.lo, before.hi))            
         b1, a1 = before.verifiers["V1"], after.verifiers["V1"]
-        self.assertEqual(a1.informative, b1.informative)                           
+        self.assertEqual(a1.informative, b1.informative)                          
         self.assertEqual((a1.last_nonce, a1.requests, a1.last_response), (b1.last_nonce + 1, b1.requests + 1, "REFUSED"))
         self.assertNotEqual(a1.last_digest, b1.last_digest); self.assertNotEqual(a1.last_gamma, b1.last_gamma)
         for v in ("V2", "V3"):

@@ -117,7 +117,7 @@ class ServiceLayer(unittest.TestCase):
         svc, sid, tok = mk()
         for vid, t in (("V1", 500_000), ("V2", 250_000), ("V3", 125_000), ("V1", 62_499)): svc.query(sid, {"verifier_id": vid, "threshold": t})
         self.assertLess(svc.owner_view(sid, tok)["feasible"]["size"], 100_000); self.assertTrue(svc.owner_view(sid, tok)["floor_holds"])
-        svc._sessions[sid].policy = Policy(0, 999_999, 500_000)       
+        svc._sessions[sid].policy = Policy(0, 999_999, 500_000)     
         v = svc.owner_view(sid, tok); self.assertFalse(v["floor_holds"]); self.assertEqual(v["floor"], 500_000)
 
     # ---- audit findings ----
@@ -144,7 +144,7 @@ class ServiceLayer(unittest.TestCase):
 
     def test_APP19_story_is_deterministic_and_every_number_comes_from_the_engine(self):
         svc = Service(); s1, s2 = svc.demo_story(), svc.demo_story()
-        self.assertEqual(s1, s2)                                                        
+        self.assertEqual(s1, s2)                                                         # deterministic
         steps = s1["bit_budget"]["steps"]
         self.assertEqual([x["candidates_after"] for x in steps], [500_001, 250_001, 125_001, 62_500, 31_250, 15_625, 15_625, 15_625])
         self.assertEqual([x["verifier_sees"] for x in steps], ["NO", "NO", "NO", "YES", "YES", "YES", "REFUSED", "REFUSED"])
@@ -201,7 +201,7 @@ class HttpBackend(HttpCase):
         self.assertEqual((st, r["response"], r["answer"]), (200, "ANSWER", True))
         st, v = self.j("GET", f"/api/sessions/{sid}", headers=own)
         self.assertEqual((st, v["owner_secret_usd"], v["anchor_version"], v["floor_holds"]), (200, 83_250, 2, True))
-        e = v["log"][-1]; b = e["auditor_view"]["feasible_before"]              
+        e = v["log"][-1]; b = e["auditor_view"]["feasible_before"]             
         self.assertEqual(decide(Policy(0, 999_999, 10_000), Interval(b["lo"], b["hi"]), 9_999).kind.value, e["auditor_view"]["policy_decision"])
         self.assertEqual((len(v["transitions"]), len(v["log"])), (2, 2))
         st, ct, payload, resp = self.call("GET", f"/api/sessions/{sid}", headers=own)
@@ -318,7 +318,7 @@ class StaticFrontendAudit(unittest.TestCase):
         blk = self.js[self.js.index("==VERIFIER-UI=="):self.js.index("==END-VERIFIER-UI==")].lower()
         for w in ("auditor", "feasible", "owner", "secret", "token", "reason", "candidates", "floor", "refreshowner"): self.assertNotIn(w, blk)
         ask_call = re.search(r'api\("/api/sessions/" \+ session \+ "/query"[^;]*;', self.js).group(0)
-        self.assertNotIn("Token", ask_call)                                             
+        self.assertNotIn("Token", ask_call)                                               
 
     def test_APP24_initial_page_state_csp_compatibility_and_no_external_resources(self):
         self.assertIn("disabled", self.by_id["ask"]["attrs"]); self.assertIn("disabled", self.by_id["attack"]["attrs"])
@@ -345,7 +345,7 @@ class StaticFrontendAudit(unittest.TestCase):
         for phrase in ("local simulation", "only on this computer", "in-memory test double", "no blockchain", "does not encrypt", "mock", "no real income verification", "us dollars"):
             self.assertIn(phrase, head)
         self.assertNotIn("production", head); self.assertNotIn("secure", head); self.assertNotIn("private by", head)
-        self.assertNotRegex(self.js, r'\$\("notice"\)\.textContent\s*=')                
+        self.assertNotRegex(self.js, r'\$\("notice"\)\.textContent\s*=')                  
 
 
 @unittest.skipUnless(shutil.which("node"), "node is required to execute the frontend logic")

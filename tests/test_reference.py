@@ -117,7 +117,6 @@ class ReferenceModel(unittest.TestCase):
             self.assertEqual(got, tr)
             self.assertEqual((iv.lo, iv.hi), (min(F), max(F)))
             self.assertEqual(iv.size, len(F))
-        # production domain: independent range()-length model
         P = Policy(0, 999_999, 10_000)
         for _ in range(60_000):
             a = rng.randint(0, 999_999); b = rng.randint(a, 999_999); t = rng.randint(-10, 1_000_010)

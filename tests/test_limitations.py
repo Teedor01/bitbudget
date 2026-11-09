@@ -23,7 +23,7 @@ def imports_of(path):
 
 class Limitations(unittest.TestCase):
     def test_T_R01_reissuance_resets_budget_documented_limitation(self):
-        s1, s2 = build_system(), build_system()              
+        s1, s2 = build_system(), build_system()               
         self.assertNotEqual(s1.scope_id, s2.scope_id)
         c1, c2 = s1.client("V1"), s2.client("V1")
         a, b = P.lo, P.hi
@@ -51,7 +51,7 @@ class Limitations(unittest.TestCase):
         q = make_query_fn(s, ["V1"], rng)
         (a, b), _ = adaptive_attack(q, P.lo, P.hi, P.W, rng, "binary")
         self.assertGreaterEqual(b - a + 1, P.W)                 
-        s.anchor._violate_revert_to(0)                          
+        s.anchor._violate_revert_to(0)                           
         c = s.client("V1")
         for _ in range(60):
             if a == b: break
@@ -62,11 +62,11 @@ class Limitations(unittest.TestCase):
         self.assertLess(b - a + 1, P.W)                          
 
     def test_T_R03_non_uniform_prior_defeats_the_entropy_claim_but_not_the_count_claim(self):
-        iv = Interval(78_125, 93_749)                            
+        iv = Interval(78_125, 93_749)                           
         self.assertGreaterEqual(iv.size, P.W)
-        spike = Fraction(9, 10)                                  
-        guess = spike + (1 - spike) / iv.size                  
-        self.assertGreater(guess, 100 * Fraction(1, P.W))       
+        spike = Fraction(9, 10)                                 
+        guess = spike + (1 - spike) / iv.size                    
+        self.assertGreater(guess, 100 * Fraction(1, P.W))        
         self.assertEqual(iv.size, 15_625)                        
 
     def test_T_L01_layering_and_import_boundaries(self):
@@ -76,7 +76,7 @@ class Limitations(unittest.TestCase):
         self.assertEqual({m.split(".")[0] for m in imports_of(pathlib.Path("core/policy.py"))},
                          {"dataclasses", "enum", "typing"})
         for f in list(py_files(SRC_DIRS)) + list(pathlib.Path("tests").glob("*.py")):
-            if f.name == "test_near_anchor.py":                  
+            if f.name in ("test_near_anchor.py", "test_near_app.py", "test_deploy_demo.py"):   
                 continue
             self.assertFalse(any(m.split(".")[0] == "integrations" for m in imports_of(f)), f)
 
@@ -101,7 +101,7 @@ class Limitations(unittest.TestCase):
             self.assertEqual(mods & forbidden, set(), f)
             text = f.read_text()
             self.assertNotIn("environ", text, f); self.assertNotIn("getenv", text, f)
-            self.assertNotIn("open(", text, f)                  
+            self.assertNotIn("open(", text, f)                   
         crypto_ok = {"hashlib", "hmac", "secrets"}               
         used = set()
         for f in py_files(SRC_DIRS):

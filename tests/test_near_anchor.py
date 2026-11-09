@@ -28,10 +28,10 @@ class ContractModel(TxSender):
         self.sent, self.logs = [], []            
         self.rpc_down = False
         self.protocol = 88
-        self.stale_head = None                    
+        self.stale_head = None                   
         self.stale_reads = 0
-        self.sender_mode = "normal"              
-        self.pending = []                     
+        self.sender_mode = "normal"               
+        self.pending = []                         
 
     # --- contract semantics (mirrors lib.rs) ---
     def _cas(self, a):
@@ -225,6 +225,27 @@ class AnchorReadTests(unittest.TestCase):
         with self.assertRaises(AnchorIntegrityError): a.read()
 
 
+class AnchorViewHelpersTests(unittest.TestCase):
+    """version/history: read-only helpers used by the live app mode."""
+    def test_version_tracks_the_chain_head(self):
+        sysobj, g, m, s, a, gate, clk = make()
+        self.assertEqual(a.version, 0)
+        from harness.system import Client
+        Client(sysobj, "V1").ask(499_999, gate=gate)
+        self.assertEqual(a.version, 1)
+
+    def test_history_follows_prev_digest_oldest_first_and_honours_the_limit(self):
+        sysobj, g, m, s, a, gate, clk = make()
+        from harness.system import Client
+        c = Client(sysobj, "V1")
+        for t in (499_999, 249_999):
+            c.ask(t, gate=gate)
+        self.assertEqual([r.header.version for r in a.history()], [0, 1, 2])
+        self.assertEqual([r.header.version for r in a.history(2)], [1, 2])      
+        m.rpc_down = True
+        with self.assertRaises(AnchorUnavailable): a.history()                    
+
+
 class AnchorCasTests(unittest.TestCase):
     def setUp(self):
         self.sysobj, self.g, self.m, self.s, self.a, self.gate, self.clk = make()
@@ -261,7 +282,7 @@ class AnchorCasTests(unittest.TestCase):
     def test_lost_transaction_is_unknown_after_timeout(self):
         self.m.sender_mode = "lost"
         self.assertIs(self.cas(), CasResult.UNKNOWN); self.assertGreaterEqual(self.clk.t, 10.0)
-        self.assertEqual(len(self.m.sent), 1)                         # never re-sent blindly
+        self.assertEqual(len(self.m.sent), 1)                         
 
     def test_stale_head_is_polled_until_fresh(self):
         self.m.stale_head, self.m.stale_reads = (0, self.g.digest()), 2
@@ -377,10 +398,10 @@ class NeverBlindlyResubmitTests(unittest.TestCase):
     def test_late_landing_tx_then_identical_retry_replays_without_new_write(self):
         from harness.system import Client
         sysobj, g, m, s, a, gate, clk = make(); m.sender_mode = "delayed"
-        req = Client(sysobj, "V1").make(499_999)                      
+        req = Client(sysobj, "V1").make(499_999)                     
         self.assertEqual(gate.handle(req).kind, "RETRY")              
         self.assertEqual((len(m.sent), m.version), (1, 0))
-        self.assertEqual(m.flush(), ["COMMITTED"])                   
+        self.assertEqual(m.flush(), ["COMMITTED"])                    
         m.sender_mode = "normal"
         r = gate.handle(req)
         self.assertEqual((r.kind, r.answer), ("ANSWER", False))
@@ -394,10 +415,10 @@ class NeverBlindlyResubmitTests(unittest.TestCase):
         m.sender_mode = "normal"
         self.assertEqual(gate.handle(req).kind, "ANSWER")             
         self.assertEqual(m.flush(), ["CONFLICT"])                    
-        self.assertEqual(m.version, 1)                                
+        self.assertEqual(m.version, 1)                               
         self.assertEqual(len(m.sent), 2)
         self.assertNotEqual(m.sent[0]["new_digest"], m.sent[1]["new_digest"])
-        self.assertEqual(gate.handle(req).answer, False)              
+        self.assertEqual(gate.handle(req).answer, False)             
 
     def test_auto_retrying_client_while_tx_in_flight_still_lands_at_most_one(self):
         sysobj, g, m, s, a, gate, clk = make(); m.sender_mode = "delayed"
