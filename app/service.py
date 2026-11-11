@@ -4,6 +4,7 @@ import secrets
 import threading
 import time
 
+from core.interfaces import AnchorUnavailable, GateConfigError          # noqa: F401  
 from core.policy import Interval, Policy, decide, quota_exceeded
 from harness.attackers import adaptive_attack, baseline_binary_search
 from harness.system import build_system
@@ -40,6 +41,12 @@ def _iv(i: Interval):
 
 
 class _Session:
+    live = False                  
+    READ_ERRORS = ()
+
+    def ask(self, vid, t):
+        return self.clients[vid].ask(t)
+
     def __init__(self, sid, policy, secret):
         self.id, self.policy, self.secret = sid, policy, secret
         self.owner_token = secrets.token_urlsafe(16)          
@@ -50,11 +57,27 @@ class _Session:
 
 
 class Service:
-    def __init__(self):
+    def __init__(self, live=None):
         self._sessions, self._lock = {}, threading.Lock()
+        self.live = live                       
+        if live is not None:
+            self._sessions[live.id] = live
+
+    # ---- mode / public chain view (no credentials) ----
+    def mode_info(self):
+        if self.live is None:
+            return {"mode": "local", "notice": SIMULATION_NOTICE}
+        return self.live.mode_info()
+
+    def chain_head(self):
+        if self.live is None:
+            raise ApiError(404, "not found")
+        return self.live.public_chain_head()
 
     # ---- sessions ----
     def create_session(self, body):
+        if self.live is not None:
+            raise ApiError(409, "live NEAR mode has one fixed session ('live'); sessions cannot be created")
         income = _int(body.get("income_usd"), "income_usd", DOMAIN_LO, DOMAIN_HI)
         K = _int(body.get("K"), "K", 1, 10 ** 6, allow_none=True)
         R = _int(body.get("R"), "R", 1, 10 ** 6, allow_none=True)
@@ -89,10 +112,32 @@ class Service:
         if vid not in VERIFIERS:
             raise ApiError(400, "verifier_id must be one of " + ", ".join(VERIFIERS))
         t = _int(body.get("threshold"), "threshold", -THRESHOLD_LIMIT, THRESHOLD_LIMIT)
+        if s.live:
+            return self._live_query(s, vid, t)
         with s.lock:
             e = self._execute(s, vid, t)
         return {"verifier_id": vid, "threshold": t,
                 "response": e["verifier_view"]["response"], "answer": e["verifier_view"]["answer"]}
+
+    def _live_query(self, s, vid, t):
+        """Live NEAR mode: map chain/store/integrity failures to safe HTTP errors; never leak internals."""
+        try:
+            with s.lock:
+                s.check_open()
+                e = self._execute(s, vid, t)
+        except ApiError:
+            raise
+        except Exception as ex:
+            mapped = s.map_error(ex)
+            if mapped is None:
+                raise
+            raise mapped from None
+        vv = e["verifier_view"]
+        out = {"verifier_id": vid, "threshold": t, "response": vv["response"], "answer": vv["answer"]}
+        if out["response"] == "RETRY":
+            out["detail"] = ("The write is not confirmed on the NEAR testnet chain, so no answer was released. "
+                             "Resend the same threshold.")
+        return out
 
     def _execute(self, s, vid, t):
         """Run one query through the real policy and gate. Caller holds s.lock. Returns the FULL (owner/auditor) entry."""
@@ -101,19 +146,26 @@ class Service:
         iv0, vs0, ver0 = st0.interval, st0.verifiers[vid], sys_.anchor.version
         quota = quota_exceeded(s.policy, vs0.requests)
         dec = decide(s.policy, iv0, t, vs0.informative)      
-        resp = s.clients[vid].ask(t)                         
-        st1, ver1 = sys_.state(), sys_.anchor.version
+        resp = s.ask(vid, t)                                 
+        try:
+            st1, ver1 = sys_.state(), sys_.anchor.version
+        except s.READ_ERRORS:                                
+            st1, ver1 = None, None                           
         expected = "REJECTED" if quota else ("REFUSED" if dec.kind.value == "REFUSED" else "ANSWER")
         consistent = resp.kind == expected and (resp.kind != "ANSWER" or resp.answer == (s.secret > t))
+        if s.live and resp.kind == "RETRY":
+            consistent = None                                
         decision = "QUOTA_EXHAUSTED" if quota else dec.kind.value
         reason = "R quota" if quota else (dec.reason.value if dec.reason.value != "NONE" else "-")
         entry = {
             "n": len(s.log) + 1, "verifier_id": vid, "threshold": t,
             "verifier_view": {"response": resp.kind, "answer": resp.answer if resp.kind == "ANSWER" else None},
             "auditor_view": {"policy_decision": decision, "reason": reason,
-                             "feasible_before": _iv(iv0), "feasible_after": _iv(st1.interval),
+                             "feasible_before": _iv(iv0),
+                             "feasible_after": _iv(st1.interval) if st1 is not None else {"lo": None, "hi": None, "size": None},
                              "anchor_version_before": ver0, "anchor_version_after": ver1,
-                             "committed": ver1 == ver0 + 1, "consistent_with_policy": consistent},
+                             "committed": (ver1 == ver0 + 1) if ver1 is not None else None,
+                             "consistent_with_policy": consistent},
         }
         s.log.append(entry)
         del s.log[:-MAX_LOG]
@@ -121,6 +173,19 @@ class Service:
 
     def owner_view(self, sid, token):
         s = self._owner(sid, token)
+        if not s.live:
+            return self._owner_view_body(s)
+        try:
+            out = self._owner_view_body(s)
+        except Exception as ex:
+            mapped = s.map_error(ex)
+            if mapped is None:
+                raise
+            raise mapped from None
+        out["live"] = s.live_info()
+        return out
+
+    def _owner_view_body(self, s):
         with s.lock:
             st, n = s.system.state(), DOMAIN_HI - DOMAIN_LO + 1
             hist = s.system.anchor.history()[-30:]
@@ -142,6 +207,8 @@ class Service:
     # ---- adversarial demo on a SHADOW session (does not touch the interactive one) ----
     def attack(self, sid, token, body):
         s = self._owner(sid, token)
+        if s.live:
+            raise ApiError(409, "the adversarial demo is not available in live NEAR mode (it runs on a local copy)")
         strategy = body.get("strategy", "squeeze")
         if strategy not in ("binary", "squeeze"):
             raise ApiError(400, "strategy must be 'binary' or 'squeeze'")
