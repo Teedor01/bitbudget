@@ -1,7 +1,25 @@
+#!/usr/bin/env python3
+"""GUARDED, STAGED deployment of a SEPARATE demo anchor contract on NEAR testnet.
+
+Why it exists: the first deployment (bbanchor-teedor.testnet + ./bbstore) is evidence and must never be touched. A public
+demo needs its own contract, its own fresh scope, its own fresh store and its own privacy budget. This script refuses to
+operate on the evidence accounts/stores, verifies the wasm before anything is sent, sends AT MOST ONE transaction per
+stage, runs near-cli-rs through a Python argument LIST (no shell, so no PowerShell/JSON quoting problems), and after any
+ambiguous outcome re-reads the chain and STOPS. It never retries a transaction by itself.
+
+Stages (run them in order; each mutating stage is a dry run unless you add --execute --confirm <contract>):
+  plan            offline: show what will happen, the wasm hash, the required balance. Reads nothing, writes nothing.
+  syntax          offline: ask the installed near binary to parse the exact command lines (--help only; nothing sent).
+  prepare         creates the FRESH store (fresh scope, fresh genesis). Refuses if the directory already has content.
+  create-account  ONE faucet transaction creating the contract account. Refuses if the account already exists.
+  deploy          ONE transaction: deploy the verified wasm and call `new` (atomic). Refuses unless every precondition holds.
+  verify          read-only: checks the chain head through the Python adapter AND the read-only chain-head reader.
+Never run scripts/near_live_check.py selftest on the demo contract: it would spend the demo's privacy budget."""
 import argparse
 import hashlib
 import io
 import json
+import locale
 import os
 import re
 import subprocess
@@ -13,11 +31,11 @@ import contextlib
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, ROOT)
 
-from harness.system import WRITER_KEY                                                 
-from integrations.near_anchor import NearAnchor, TxSender, preflight                  
-from integrations.near_rpc import NearRpc, NearRpcError, NearRpcUnavailable           
-from integrations.record_store import DirRecordStore                                   
-from scripts import chain_head, near_live_check as nlc                                 
+from harness.system import WRITER_KEY                                                  # noqa: E402
+from integrations.near_anchor import NearAnchor, TxSender, preflight                  # noqa: E402
+from integrations.near_rpc import NearRpc, NearRpcError, NearRpcUnavailable           # noqa: E402
+from integrations.record_store import DirRecordStore                                   # noqa: E402
+from scripts import chain_head, near_live_check as nlc                                 # noqa: E402
 
 # ---- the evidence deployment (owner-reported, NEAR_EVIDENCE.md section 8): never touched by this script ----
 EVIDENCE_ACCOUNTS = {"bbanchor-teedor.testnet"}
@@ -30,10 +48,14 @@ WASM_PATH = os.path.abspath(os.path.join(ROOT, "contracts", "anchor", "dist", "b
 SUMS_PATH = os.path.join(os.path.dirname(WASM_PATH), "SHA256SUMS")
 ACCOUNT_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,63}$")
 PLAN_FILE = "deploy_plan_demo.json"
-ZERO_CODE_HASH = "1" * 32                      
+JOURNAL_FILE = "attempts_demo.json"            # one entry per transaction attempt, written BEFORE it is sent
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+SECRET_LINE_RE = re.compile(r"seed phrase|secret|private key|mnemonic", re.I)
+LONG_KEY_RE = re.compile(r"ed25519:[1-9A-HJ-NP-Za-km-z]{60,}")   # a secret key is ~88 base58 chars; a public key ~44
+ZERO_CODE_HASH = "1" * 32                      # base58 of 32 zero bytes: the account has no contract
 YOCTO, BYTE_COST = 10 ** 24, 10 ** 19
-STORAGE_OVERHEAD_BYTES = 864                  
-GAS_ALLOWANCE_YOCTO = 100 * 10 ** 12 * 10 ** 8  
+STORAGE_OVERHEAD_BYTES = 864                   # account record + one access key + contract state, rounded up
+GAS_ALLOWANCE_YOCTO = 100 * 10 ** 12 * 10 ** 8  # 100 TGas prepaid at an upper-bound 1e8 yocto/gas = 0.01 NEAR
 MARGIN = 1.05
 EXIT_OK, EXIT_REFUSED, EXIT_AMBIGUOUS = 0, 1, 2
 _B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
@@ -127,16 +149,117 @@ def poll_account(rpc, acct, done, sleep, clock, seconds=45):
         sleep(3)
 
 
+def decode_output(raw) -> str:
+    """Deliberate, crash-proof decoding of the near CLI's output. The bytes are decoded by US, never by subprocess
+    (text mode uses the locale encoding, cp1252 on Windows, and raises on a bad byte). Strategy: strict UTF-8 first (what
+    near-cli-rs emits); if that fails, the system's preferred encoding with errors='replace'; if even that name is
+    unknown, latin-1 (which decodes every byte). ANSI colour codes are stripped. Cannot raise."""
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        text = raw
+    else:
+        try:
+            text = bytes(raw).decode("utf-8")
+        except UnicodeDecodeError:
+            try:
+                text = bytes(raw).decode(locale.getpreferredencoding(False) or "latin-1", errors="replace")
+            except (LookupError, ValueError):
+                text = bytes(raw).decode("latin-1")
+    return ANSI_RE.sub("", text)
+
+
+def sanitize(text: str) -> str:
+    """Text that is safe to print on ANY console (ASCII only; non-ASCII becomes \\uXXXX) and free of key material:
+    lines mentioning a seed phrase/secret/private key are dropped and long ed25519 keys are masked. Raw CLI output is
+    never written to disk."""
+    kept = []
+    for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if SECRET_LINE_RE.search(line):
+            kept.append("[line withheld: it mentions key material]")
+        else:
+            kept.append(LONG_KEY_RE.sub("ed25519:[secret key masked]", line))
+    return "\n".join(kept).encode("ascii", "backslashreplace").decode("ascii")
+
+
+def _tail(stdout, stderr, limit=1500) -> str:
+    parts = []
+    for label, raw in (("stdout", stdout), ("stderr", stderr)):
+        t = sanitize(decode_output(raw)).strip()
+        if t:
+            parts.append("[%s] %s" % (label, t))
+    text = "\n".join(parts) or "(no output captured)"
+    return text[-limit:]
+
+
 def run_cli(runner, argv, timeout):
-    """(status, tail) with status in ok | failed | timeout | missing. Never raises; never retries."""
+    """(status, tail). status is one of:
+       ok       the command exited 0
+       failed   the command exited non-zero            -> the chain must still be checked: it may have been sent
+       timeout  the command was killed after `timeout` -> NOT a failure: the transaction MAY have been sent
+       error    anything unexpected while running it   -> NOT a failure: the transaction MAY have been sent
+       missing  the binary could not be started        -> the only status that proves nothing was sent
+    Output is captured as BYTES and decoded here (see decode_output); partial output is kept on timeout; stdin is closed
+    so a hidden prompt fails fast instead of hanging. Never raises Exception; never retries."""
     try:
-        r = runner(argv, capture_output=True, text=True, timeout=timeout, check=False)
+        r = runner(argv, capture_output=True, stdin=subprocess.DEVNULL, timeout=timeout, check=False)
+    except (FileNotFoundError, PermissionError, NotADirectoryError):
+        return "missing", "the near binary could not be started (nothing was sent)"
+    except subprocess.TimeoutExpired as e:
+        return "timeout", ("the near command timed out after %ss and was stopped; this is NOT proof of failure: the transaction MAY have "
+                           "been sent. Partial output follows.\n" % timeout) + _tail(getattr(e, "stdout", None) or getattr(e, "output", None), getattr(e, "stderr", None))
+    except Exception as e:  # noqa: BLE001  (anything unexpected, e.g. a decode error: report as ambiguous, never as failure)
+        return "error", "the near command raised %s while running; this is NOT proof of failure: the transaction MAY have been sent." % type(e).__name__
+    return ("ok" if r.returncode == 0 else "failed"), _tail(getattr(r, "stdout", None), getattr(r, "stderr", None))
+
+
+# ---- attempt journal: every transaction attempt is recorded BEFORE it is sent, so a crash can never hide it ----
+def journal_load(store):
+    try:
+        with open(os.path.join(store, JOURNAL_FILE)) as f:
+            data = json.load(f)
     except FileNotFoundError:
-        return "missing", "the near binary was not found (nothing was sent)"
-    except subprocess.TimeoutExpired:
-        return "timeout", "the near command timed out; the transaction MAY have been sent"
-    text = ((getattr(r, "stdout", "") or "") + (getattr(r, "stderr", "") or "")).strip()
-    return ("ok" if r.returncode == 0 else "failed"), text[-1200:]
+        return []
+    except (OSError, ValueError):
+        raise Refuse("the attempt journal in %s is unreadable: inspect the chain and the store before doing anything else" % store)
+    if not isinstance(data, list):
+        raise Refuse("the attempt journal is malformed: inspect before doing anything else")
+    return data
+
+
+def journal_save(store, entries):
+    tmp = os.path.join(store, JOURNAL_FILE + ".tmp")
+    with open(tmp, "w") as f:
+        json.dump(entries, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, os.path.join(store, JOURNAL_FILE))
+
+
+def journal_start(store, stage):
+    entries = journal_load(store)
+    entries.append({"stage": stage, "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "outcome": "started"})
+    journal_save(store, entries)
+    return len(entries) - 1
+
+
+def journal_finish(store, idx, outcome, cli_status, chain_after, tail):
+    entries = journal_load(store)
+    entries[idx].update(outcome=outcome, cli_status=cli_status, chain_after=chain_after, output_tail=tail[-500:])
+    journal_save(store, entries)
+
+
+def journal_unresolved(store, stage):
+    """Attempts of this stage that are neither confirmed by the chain nor proven unsent."""
+    return [e for e in journal_load(store) if e.get("stage") == stage and e.get("outcome") in ("started", "ambiguous")]
+
+
+def prior_attempts_text(prior, stage):
+    lines = ["PREVIOUS %s ATTEMPT(S) ARE UNRESOLVED (ambiguous or interrupted); a timeout or crash does not prove a failure:" % stage]
+    for e in prior:
+        lines.append("  - started %s, outcome %s, cli_status %s, chain_after %s" % (e.get("started_utc"), e.get("outcome"), e.get("cli_status", "n/a"), e.get("chain_after", "n/a")))
+    lines.append("Before any further attempt: look the account up on the chain (`inspect`), wait, and only then add --acknowledge-ambiguous-attempt.")
+    return "\n".join(lines)
 
 
 def load_prepared(a):
@@ -196,7 +319,8 @@ def stage_syntax(a, out, runner=subprocess.run, **_):
     guard(a)
     create, deploy = build_argvs(a)
     ver_status, ver = run_cli(runner, [a.near_cli, "--version"], 30)
-    out("near binary: %s" % (ver.splitlines()[-1] if ver else ver_status))
+    m = re.search(r"near-cli-rs\s+[\d.]+", ver or "")
+    out("near binary: %s" % (m.group(0) if m else (ver.splitlines()[-1] if ver else ver_status)))
     if ver_status == "ok" and "0.30.1" not in ver:
         out("WARNING: verified against near-cli-rs 0.30.1; yours differs. Do NOT upgrade; tell the assistant.")
     ok = ver_status == "ok"
@@ -242,20 +366,30 @@ def stage_create(a, out, rpc=None, runner=subprocess.run, sleep=time.sleep, cloc
     need = required_yocto(len(wasm))
     out("account %s does not exist yet. Faucet command (argument list): %s" % (a.contract, subprocess.list2cmdline(create)))
     out("required balance for the deployment: at least %s" % near(need))
+    prior = journal_unresolved(a.store, "create-account")
+    if prior:
+        out(prior_attempts_text(prior, "create-account"))
     if not need_execute(a):
         out("DRY RUN: nothing sent. To execute: add --execute --confirm %s" % a.contract)
         return EXIT_OK
+    if prior and not a.acknowledge_ambiguous_attempt:
+        raise Refuse("an earlier create-account attempt is unresolved (see above); the chain was just re-read and shows no account. "
+                     "Nothing was sent. A further attempt must be deliberate: add --acknowledge-ambiguous-attempt.")
+    idx = journal_start(a.store, "create-account")              # recorded BEFORE sending: a crash cannot hide the attempt
     out("EXECUTING exactly one faucet transaction ...")
     status, tail = run_cli(runner, create, a.timeout)
     out("near command: %s\n%s" % (status, tail))
     if status == "missing":
+        journal_finish(a.store, idx, "not_sent", status, "n/a", tail)
         return EXIT_REFUSED
     st, reached = poll_account(rpc, a.contract, lambda s_: s_ is not None, sleep, clock)
     if not reached:
-        out("AMBIGUOUS: the CLI said '%s' and the chain does not (yet) show account %s (%s). A transaction may have been sent. STOP. "
-            "Do not re-run anything: wait a minute, look the account up (explorer address page or `near account view-account-summary`) "
-            "and tell the assistant what you see." % (status, a.contract, "chain unreadable" if st == "unknown" else "account not found"))
+        journal_finish(a.store, idx, "ambiguous", status, "unreadable" if st == "unknown" else "account_not_found", tail)
+        out("AMBIGUOUS: the CLI said '%s' and the chain does not (yet) show account %s (%s). A transaction may have been sent; a timeout, "
+            "a crash or a non-zero exit does NOT prove it failed. STOP. Do not re-run anything: wait, then run `inspect` and look the "
+            "account up on the explorer, and tell the assistant what you see." % (status, a.contract, "chain unreadable" if st == "unknown" else "account not found"))
         return EXIT_AMBIGUOUS
+    journal_finish(a.store, idx, "confirmed", status, "account_found", tail)
     if status != "ok":
         out("NOTE: the CLI reported '%s' but the chain shows the account exists (the chain is authoritative)." % status)
     bal = int(st["amount"])
@@ -284,20 +418,30 @@ def stage_deploy(a, out, rpc=None, runner=subprocess.run, sleep=time.sleep, cloc
     out("preconditions hold: account exists, balance %s >= %s, no contract yet, wasm verified (code_hash will be %s)" % (
         near(st["amount"]), near(need), expected_hash))
     out("init args: %s" % init_json)
+    prior = journal_unresolved(a.store, "deploy")
+    if prior:
+        out(prior_attempts_text(prior, "deploy"))
     if not need_execute(a):
         out("DRY RUN: nothing sent. To execute: add --execute --confirm %s" % a.contract)
         return EXIT_OK
+    if prior and not a.acknowledge_ambiguous_attempt:
+        raise Refuse("an earlier deploy attempt is unresolved (see above); the chain was just re-read and shows no contract. "
+                     "Nothing was sent. A further attempt must be deliberate: add --acknowledge-ambiguous-attempt.")
+    idx = journal_start(a.store, "deploy")                      # recorded BEFORE sending
     out("EXECUTING exactly one deploy+init transaction (atomic) ...")
     status, tail = run_cli(runner, deploy, a.timeout)
     out("near command: %s\n%s" % (status, tail))
     if status == "missing":
+        journal_finish(a.store, idx, "not_sent", status, "n/a", tail)
         return EXIT_REFUSED
     st2, reached = poll_account(rpc, a.contract, lambda s_: isinstance(s_, dict) and s_.get("code_hash") != ZERO_CODE_HASH, sleep, clock)
     if not reached:
-        out("AMBIGUOUS: the CLI said '%s' and the chain does not (yet) show a contract on %s (%s). A transaction may have been sent. STOP. "
-            "Do NOT re-run `deploy` until you have looked at the chain (explorer address page / transaction list) and told the assistant "
-            "what you see." % (status, a.contract, "chain unreadable" if st2 == "unknown" else "no contract visible"))
+        journal_finish(a.store, idx, "ambiguous", status, "unreadable" if st2 == "unknown" else "no_contract_visible", tail)
+        out("AMBIGUOUS: the CLI said '%s' and the chain does not (yet) show a contract on %s (%s). A transaction may have been sent; a timeout, "
+            "a crash or a non-zero exit does NOT prove it failed. STOP. Do NOT re-run `deploy` until you have run `inspect`, looked at the "
+            "chain (explorer address page / transaction list) and told the assistant what you see." % (status, a.contract, "chain unreadable" if st2 == "unknown" else "no contract visible"))
         return EXIT_AMBIGUOUS
+    journal_finish(a.store, idx, "confirmed", status, "contract_found", tail)
     got = st2.get("code_hash")
     if got != expected_hash:
         out("STOP: the account now has code_hash %s but the expected hash is %s. Do not continue; tell the assistant." % (got, expected_hash))
@@ -342,14 +486,16 @@ def stage_verify(a, out, rpc=None, **_):
         return EXIT_REFUSED
     check("on-chain code_hash equals the verified wasm", st.get("code_hash") == code_hash_of(wasm), st.get("code_hash"))
     ia = plan["init_args"]
+    # path 1: the Python adapter (store + chain), strictly read-only
     anchor = NearAnchor(rpc, a.contract, _NoSend(), DirRecordStore(a.store), WRITER_KEY, cfg["scope_id"], cfg["policy_digest"])
     try:
         rec = anchor.read()
         p1 = {"version": rec.header.version, "digest": rec.digest()}
         check("Python adapter read (store matches chain)", True, "version=%d digest=%s" % (p1["version"], p1["digest"]))
-    except Exception as e:  
+    except Exception as e:  # noqa: BLE001  (report, never guess)
         p1 = None
         check("Python adapter read (store matches chain)", False, type(e).__name__ + ": " + str(e)[:120])
+    # path 2: the read-only chain-head reader (no store, no keys)
     buf = io.StringIO()
     rc = chain_head.main(["--contract", a.contract, "--rpc", a.rpc, "--json"], rpc=rpc, out=lambda s: buf.write(str(s) + "\n"))
     try:
@@ -373,8 +519,52 @@ def stage_verify(a, out, rpc=None, **_):
     return EXIT_OK if ok else EXIT_REFUSED
 
 
+def stage_inspect(a, out, rpc=None, **_):
+    """Read-only: what does the chain say about the demo account right now, and what did earlier attempts record?"""
+    wasm = guard(a)
+    rpc = rpc or NearRpc(a.rpc)
+    problems = preflight(rpc, expect_chain="testnet")
+    out("network: %s" % ("OK (testnet, protocol ok)" if not problems else "PROBLEM: " + "; ".join(problems)))
+    st = account_state(rpc, a.contract)
+    if st is None:
+        out("account %s: DOES NOT EXIST on the chain right now" % a.contract)
+    else:
+        ch = st.get("code_hash")
+        out("account %s: EXISTS, balance %s, code_hash %s (%s)" % (a.contract, near(st["amount"]), ch,
+            "no contract yet" if ch == ZERO_CODE_HASH else ("the verified wasm" if ch == code_hash_of(wasm) else "UNEXPECTED code")))
+    out("explorer (read-only): https://testnet.nearblocks.io/address/%s" % a.contract)
+    try:
+        entries = journal_load(a.store) if os.path.isdir(a.store) else []
+    except Refuse as e:
+        entries = []
+        out("journal problem: %s" % e)
+    if not entries:
+        out("attempt journal: no recorded attempts")
+    for e in entries:
+        out("attempt: %s started %s, outcome %s, cli_status %s, chain_after %s" % (e.get("stage"), e.get("started_utc"), e.get("outcome"), e.get("cli_status", "n/a"), e.get("chain_after", "n/a")))
+    out("this stage sent nothing and wrote nothing.")
+    return EXIT_OK
+
+
+def stage_note_prior_attempt(a, out, **_):
+    """OFFLINE: record an attempt that ran under an older version of this script (which kept no journal), so the safeguards
+    know it happened. It adds an 'ambiguous' entry: the next `--execute` of that stage then needs --acknowledge-ambiguous-attempt."""
+    guard(a)
+    load_prepared(a)
+    entries = journal_load(a.store)
+    entries.append({"stage": a.note_stage, "started_utc": "unknown (before the journal existed; reported by the owner)",
+                    "outcome": "ambiguous", "cli_status": "timeout (owner-reported)",
+                    "chain_after": "account_not_found (owner lookups)" if a.note_stage == "create-account" else "no_contract_visible (owner lookups)",
+                    "output_tail": sanitize(a.note)[:300]})
+    journal_save(a.store, entries)
+    out("recorded: an earlier %s attempt is now journaled as AMBIGUOUS. Nothing was sent; no network was used." % a.note_stage)
+    out("the next `%s --execute` will refuse until you add --acknowledge-ambiguous-attempt (and the chain is re-read first)." % a.note_stage)
+    return EXIT_OK
+
+
 STAGES = {"plan": stage_plan, "syntax": stage_syntax, "prepare": stage_prepare, "create-account": stage_create,
-          "deploy": stage_deploy, "verify": stage_verify}
+          "deploy": stage_deploy, "verify": stage_verify, "inspect": stage_inspect,
+          "note-prior-attempt": stage_note_prior_attempt}
 
 
 def parse_args(argv=None):
@@ -388,11 +578,24 @@ def parse_args(argv=None):
     ap.add_argument("--execute", action="store_true", help="actually send the single transaction of a mutating stage")
     ap.add_argument("--confirm", default="", help="must equal --contract when --execute is given")
     ap.add_argument("--expect-version", type=int, default=0, help="verify: the chain version you expect")
+    ap.add_argument("--note-stage", choices=("create-account", "deploy"), default="create-account",
+                    help="note-prior-attempt: which stage's earlier (unjournaled) attempt to record")
+    ap.add_argument("--note", default="recorded by the owner", help="note-prior-attempt: free text (sanitised)")
+    ap.add_argument("--acknowledge-ambiguous-attempt", action="store_true",
+                    help="allow a further attempt of a stage whose earlier attempt is unresolved (ambiguous or interrupted)")
     ap.add_argument("--timeout", type=float, default=180.0, help="seconds to wait for the near command")
     return ap.parse_args(argv)
 
 
-def main(argv=None, out=print, **inject):
+def safe_print(text):
+    """print() that cannot raise UnicodeEncodeError on a narrow console code page (e.g. cp1252)."""
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        print(str(text).encode("ascii", "backslashreplace").decode("ascii"))
+
+
+def main(argv=None, out=safe_print, **inject):
     a = parse_args(argv)
     try:
         return STAGES[a.stage](a, out, **inject)
