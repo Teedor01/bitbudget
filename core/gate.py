@@ -16,7 +16,7 @@ class Gate:
         self.pd = policy_digest(policy)
 
     def _load(self):
-        rec = self.anchor.read()                      # may raise AnchorUnavailable
+        rec = self.anchor.read()                     
         if rec.header.scope_id != self.scope_id or rec.header.policy_digest != self.pd:
             raise GateConfigError("anchor record does not match this gate's scope/policy")
         st = State.from_bytes(self.sealer.unseal(rec.sealed_state))
@@ -36,7 +36,7 @@ class Gate:
         if req.scope_id != self.scope_id or req.policy_digest != self.pd:
             return Response.rejected()
         if not isinstance(req.blinding, (bytes, bytearray)) or len(req.blinding) < MIN_BLINDING_BYTES:
-            return Response.rejected()       
+            return Response.rejected()        
         if not self.auth.verify(req):
             return Response.rejected()
         try:

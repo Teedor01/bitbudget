@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+contracts/anchor/target/
+contracts/anchor/vmtest/target/
+bbstore/
+bbstore-demo/

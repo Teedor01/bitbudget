@@ -1,3 +1,5 @@
+"""Pure policy engine (SECURITY_SPEC section 5). Imports: dataclasses, enum, typing ONLY.
+No cryptography, network, database, clock or infrastructure. Integers only; the secret is never an input."""
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Tuple
@@ -13,7 +15,7 @@ class Kind(Enum):
     REFUSED = "REFUSED"
 
 
-class Reason(Enum):  
+class Reason(Enum):  # internal diagnostics for tests; never exposed to verifiers
     NONE = "NONE"
     FLOOR = "FLOOR"
     CAP = "CAP"
@@ -37,9 +39,9 @@ class Interval:
 class Policy:
     lo: int
     hi: int
-    W: int                    
-    K: Optional[int] = None   
-    R: Optional[int] = None  
+    W: int                    # privacy floor: minimum feasible-set cardinality
+    K: Optional[int] = None   # per-verifier informative allowance (fairness only); None = disabled
+    R: Optional[int] = None   # per-verifier committed-request quota (resource control only); None = disabled
 
     def __post_init__(self):
         for x in (self.lo, self.hi, self.W):
@@ -60,7 +62,7 @@ class Policy:
 class Decision:
     kind: Kind
     reason: Reason
-    forced_answer: Optional[bool]  
+    forced_answer: Optional[bool]  # set only for DETERMINED
 
 
 def branches(iv: Interval, t: int) -> Tuple[Optional[Interval], Optional[Interval]]:

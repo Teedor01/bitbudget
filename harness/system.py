@@ -9,7 +9,7 @@ from testdoubles.local_anchor import LocalTestAnchor
 from testdoubles.mock_credential import MockCredential
 from testdoubles.test_sealer import UnsealedTestSealer
 
-DEMO_POLICY = Policy(lo=0, hi=999_999, W=10_000)          
+DEMO_POLICY = Policy(lo=0, hi=999_999, W=10_000)         
 FIXTURE_SECRET = 83_250                                   
 WRITER_KEY = "test-writer-key"
 

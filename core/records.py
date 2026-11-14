@@ -5,8 +5,8 @@ from typing import Dict, Optional
 
 from core.policy import Interval, Policy
 
-STATE_LEN = 2048        
-MIN_BLINDING_BYTES = 32 
+STATE_LEN = 2048       
+MIN_BLINDING_BYTES = 32  
 ZERO64 = "0" * 64
 
 
@@ -39,7 +39,7 @@ class Request:
     nonce: int
     threshold: int
     policy_digest: str
-    blinding: bytes = field(repr=False)     
+    blinding: bytes = field(repr=False)    
     auth_tag: str = field(repr=False)
 
     def digest(self) -> str:
@@ -73,7 +73,7 @@ class VerifierState:
     last_digest: str = ""
     informative: int = 0
     requests: int = 0
-    last_response: str = ""       
+    last_response: str = ""        
     last_gamma: str = ""
 
 

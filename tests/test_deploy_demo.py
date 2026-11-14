@@ -1,7 +1,9 @@
+import io
 import json
 import os
 import pathlib
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -26,6 +28,9 @@ class FakeChain:
         self.balance, self.protocol, self.rpc_down, self.unreadable_after_cli = balance_near, protocol, False, False
         self.mode = {"create": "ok", "deploy": "ok"}
         self.version_text = "near-cli-rs 0.30.1"
+        self.kwargs = []                                   # keyword arguments of every transaction-sending CLI call
+        self.cli_stdout, self.cli_stderr = b"transaction ok", b""
+        self.on_cli = None                                 # optional hook run when a CLI call starts (before effects)
 
     # ---- RPC ----
     def transport(self, url, body, timeout):
@@ -51,23 +56,33 @@ class FakeChain:
         return NearRpc("http://x", transport=self.transport)
 
     # ---- near CLI ----
-    def runner(self, argv, capture_output=True, text=True, timeout=0, check=False):
+    def runner(self, argv, **kw):
         argv = list(argv)
         if argv[-1] == "--help":
-            return subprocess.CompletedProcess(argv, 0, "usage", "")
+            return subprocess.CompletedProcess(argv, 0, b"usage", b"")
         if argv[1:2] == ["--version"]:
-            return subprocess.CompletedProcess(argv, 0, self.version_text, "")
-        self.calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, self.version_text.encode(), b"")
+        self.calls.append(argv); self.kwargs.append(kw)
+        if self.on_cli:
+            self.on_cli()
         kind = "create" if argv[1:3] == ["account", "create-account"] else "deploy"
         mode = self.mode[kind]
         if mode == "missing":
             raise FileNotFoundError("near")
-        if mode in ("ok", "timeout_applied", "fail_applied", "wrong_code", "bad_init"):
+        if mode == "permission":
+            raise PermissionError("near")
+        if mode == "crash":                                # the whole script is interrupted mid-command
+            raise KeyboardInterrupt()
+        if mode in ("ok", "timeout_applied", "fail_applied", "wrong_code", "bad_init", "decode_error_applied", "error_applied"):
             self._apply(kind, argv, mode)
         if mode.startswith("timeout"):
-            raise subprocess.TimeoutExpired(argv, timeout)
+            raise subprocess.TimeoutExpired(argv, kw.get("timeout", 0), output=self.cli_stdout, stderr=self.cli_stderr)
+        if mode.startswith("decode_error"):                # what subprocess text mode raises on Windows (cp1252)
+            raise UnicodeDecodeError("cp1252", b"\x81", 0, 1, "character maps to <undefined>")
+        if mode.startswith("error"):
+            raise RuntimeError("boom")
         failed = mode.startswith("fail")
-        return subprocess.CompletedProcess(argv, 1 if failed else 0, "" if failed else "transaction ok", "error" if failed else "")
+        return subprocess.CompletedProcess(argv, 1 if failed else 0, self.cli_stdout, self.cli_stderr if failed or self.cli_stderr else b"")
 
     def _apply(self, kind, argv, mode):
         if kind == "create":
@@ -168,6 +183,7 @@ class PlanSyntaxPrepare(Case):
         self.assertEqual(pathlib.Path(self.store, dd.PLAN_FILE).read_text(), before)
         self.assertEqual(pathlib.Path(sibling, "keep.txt").read_text(), "evidence")
         self.assertEqual((self.chain.calls, self.chain.rpc_calls), ([], 0))
+        # two fresh stores never share a scope
         other = os.path.join(self.tmp.name, "other-demo")
         self.run_stage("prepare", store=other)
         with open(os.path.join(other, dd.PLAN_FILE)) as f:
@@ -267,7 +283,7 @@ class Deploy(Case):
         self.ready(); self.chain.mode["deploy"] = "timeout_applied"
         code, text = self.go("deploy")
         self.assertEqual((code, len(self.chain.calls)), (0, 1)); self.assertIn("chain is authoritative", text)
-        code, text = self.go("deploy")                                  
+        code, text = self.go("deploy")                                  # an accidental second run
         self.assertEqual((code, len(self.chain.calls)), (1, 1)); self.assertIn("never redeploy", text)
 
     def test_DD22_lost_or_failed_deploy_is_ambiguous_stops_and_is_never_retried_by_the_script(self):
@@ -339,6 +355,176 @@ class Verify(Case):
     def test_DD28_old_network_fails_the_readback_before_reading_anything_else(self):
         self.deployed(); self.chain.protocol = 80
         code, text = self.run_stage("verify"); self.assertEqual(code, 1); self.assertIn("FAIL testnet preflight", text); self.assertNotIn("app.server", text)
+
+
+class CliHandling(Case):
+    """Decoding, timeouts and unexpected errors around the near CLI (the Windows failure mode: cp1252 UnicodeDecodeError + timeout)."""
+
+    def test_DD30_real_process_with_non_utf8_bytes_cannot_crash_and_output_is_ascii_safe(self):
+        status, tail = dd.run_cli(subprocess.run, [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'caf\\xe9 \\xff done')"], 20)
+        self.assertEqual(status, "ok"); self.assertIn("done", tail); tail.encode("ascii"); tail.encode("cp1252")
+        status, tail = dd.run_cli(subprocess.run, [sys.executable, "-c", "import sys; sys.stdout.buffer.write('ok \\u2714 \\u00e9'.encode('utf-8'))"], 20)
+        self.assertEqual(status, "ok"); tail.encode("ascii"); self.assertIn("\\u2714", tail)           # shown as an escape, never raises
+        self.assertEqual(dd.decode_output(b"\x1b[32mgreen\x1b[0m"), "green")                           # colour codes stripped
+        self.assertEqual(dd.decode_output(None), "")
+        bad = dd.decode_output(b"\xff\xfe ok \x81")                                  # invalid in UTF-8 and partly undefined in cp1252
+        self.assertIsInstance(bad, str); self.assertIn("ok", bad)                       # decoded, not raised, not dropped
+
+    def test_DD31_real_process_timeout_keeps_partial_stdout_and_stderr_and_is_not_a_failure(self):
+        code = "import sys,time; print('creating account...', flush=True); sys.stderr.write('waiting for faucet\\n'); sys.stderr.flush(); time.sleep(30)"
+        status, tail = dd.run_cli(subprocess.run, [sys.executable, "-c", code], 2)
+        self.assertEqual(status, "timeout")
+        self.assertIn("creating account", tail); self.assertIn("waiting for faucet", tail)
+        self.assertIn("NOT proof of failure", tail); self.assertIn("MAY have been sent", tail)
+
+    def test_DD32_the_cli_is_run_in_bytes_mode_with_stdin_closed(self):
+        self.prepared(); self.go("create-account")
+        kw = self.chain.kwargs[0]
+        self.assertTrue(kw["capture_output"]); self.assertIs(kw["stdin"], subprocess.DEVNULL)
+        self.assertNotIn("text", kw); self.assertNotIn("universal_newlines", kw); self.assertNotIn("encoding", kw)   # we decode, subprocess does not
+
+    def test_DD33_a_decode_error_or_any_unexpected_exception_is_ambiguous_never_a_crash_or_a_failure(self):
+        self.assertEqual(dd.run_cli(lambda *a, **k: (_ for _ in ()).throw(UnicodeDecodeError("cp1252", b"\x81", 0, 1, "x")), ["near"], 5)[0], "error")
+        self.assertEqual(dd.run_cli(lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")), ["near"], 5)[0], "error")
+        for mode, created in (("decode_error_applied", True), ("error_applied", True), ("decode_error_lost", False), ("error_lost", False)):
+            self.setUp(); self.prepared(); self.chain.mode["create"] = mode
+            code, text = self.go("create-account")
+            self.assertEqual(len(self.chain.calls), 1, mode)                       # never retried
+            if created:
+                self.assertEqual(code, 0, mode); self.assertIn("chain is authoritative", text)
+            else:
+                self.assertEqual(code, 2, mode); self.assertIn("does NOT prove it failed", text)
+                self.assertNotIn("bbdemo-teedor.testnet", self.chain.accounts)
+            self.assertNotIn("Traceback", text)
+
+    def test_DD34_timeout_with_the_account_created_is_success_and_with_it_missing_is_ambiguous(self):
+        self.prepared(); self.chain.mode["create"] = "timeout_applied"; self.chain.cli_stdout = b"creating account..."; self.chain.cli_stderr = b"waiting for faucet"
+        code, text = self.go("create-account")
+        self.assertEqual((code, len(self.chain.calls)), (0, 1)); self.assertIn("chain is authoritative", text)
+        self.assertIn("creating account...", text); self.assertIn("waiting for faucet", text)         # partial output preserved
+        self.assertEqual(self.plan_journal()[0]["outcome"], "confirmed")
+        self.setUp(); self.prepared(); self.chain.mode["create"] = "timeout_lost"; self.chain.cli_stdout = b"creating account..."
+        code, text = self.go("create-account")
+        self.assertEqual((code, len(self.chain.calls)), (2, 1))
+        self.assertIn("the CLI said 'timeout'", text); self.assertNotIn("the CLI said 'failed'", text)   # never reported as a failure
+        self.assertIn("creating account...", text); self.assertIn("does NOT prove it failed", text)
+        self.assertEqual(self.plan_journal()[0]["outcome"], "ambiguous")
+
+    def test_DD35_non_utf8_output_through_a_whole_stage_prints_only_console_safe_text(self):
+        self.prepared(); self.chain.cli_stdout = b"caf\xe9 \xff created \xe2\x9c\x94"
+        lines = []
+        code = dd.main(["create-account", "--store", self.store, "--execute", "--confirm", "bbdemo-teedor.testnet"], out=lines.append,
+                       rpc=self.chain.rpc(), runner=self.chain.runner, sleep=self.clk.sleep, clock=self.clk.now)
+        self.assertEqual(code, 0)
+        for line in lines:
+            line.encode("cp1252")                                                  # would raise on a narrow console if anything non-encodable leaked
+
+    def test_DD36_a_binary_that_cannot_start_proves_nothing_was_sent_and_needs_no_acknowledgement(self):
+        for mode in ("missing", "permission"):
+            self.setUp(); self.prepared(); self.chain.mode["create"] = mode
+            code, text = self.go("create-account")
+            self.assertEqual(code, 1, mode); self.assertIn("nothing was sent", text); self.assertEqual(self.plan_journal()[0]["outcome"], "not_sent")
+            self.chain.mode["create"] = "ok"
+            self.assertEqual(self.go("create-account")[0], 0, mode)                # a proven-unsent attempt does not block a retry
+
+    def test_DD37_key_material_is_never_printed_or_written(self):
+        secret = "ed25519:" + "5" * 88
+        self.prepared()
+        self.chain.cli_stdout = ("Master Seed Phrase: alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima\n"
+                                 "SECRET KEYPAIR: %s\nAccess key (bare line): %s\nPublic Key: ed25519:%s\nNew account created\n" % (secret, secret, "7" * 44)).encode()
+        self.chain.mode["create"] = "timeout_lost"
+        code, text = self.go("create-account")
+        for leaked in (secret, "5" * 40, "alpha bravo", "Master Seed"):
+            self.assertNotIn(leaked, text)
+        self.assertIn("Public Key", text); self.assertIn("New account created", text)
+        for root, _, files in os.walk(self.store):                                # nothing secret on disk
+            for f in files:
+                data = pathlib.Path(root, f).read_text(errors="replace")
+                self.assertNotIn("5" * 40, data); self.assertNotIn("alpha bravo", data)
+
+    def test_DD38_console_printing_cannot_raise_on_a_narrow_code_page(self):
+        buf = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
+        with mock.patch.object(sys, "stdout", buf):
+            dd.safe_print("created \u2714 ok")
+        buf.flush(); self.assertIn(b"created", buf.buffer.getvalue())
+
+    def plan_journal(self):
+        with open(os.path.join(self.store, dd.JOURNAL_FILE)) as f:
+            return json.load(f)
+
+
+class AttemptJournal(Case):
+    """No blind retry: every attempt is journaled BEFORE it is sent, and an unresolved one blocks the next without a deliberate flag."""
+    def jr(self):
+        with open(os.path.join(self.store, dd.JOURNAL_FILE)) as f:
+            return json.load(f)
+
+    def test_DD39_the_attempt_is_recorded_before_the_command_runs(self):
+        self.prepared(); seen = []
+        self.chain.on_cli = lambda: seen.append(self.jr())
+        self.go("create-account")
+        self.assertEqual([e["outcome"] for e in seen[0]], ["started"])             # visible to a crash at that moment
+        self.assertEqual(self.jr()[0]["outcome"], "confirmed")
+
+    def test_DD40_an_interrupted_attempt_blocks_a_blind_second_faucet_attempt(self):
+        self.prepared(); self.chain.mode["create"] = "crash"
+        with self.assertRaises(KeyboardInterrupt):
+            self.go("create-account")
+        self.assertEqual(self.jr()[0]["outcome"], "started"); self.chain.calls.clear()
+        self.chain.mode["create"] = "ok"      # from here a broken gate would SUCCEED (clean assertion failure), not crash the runner
+        code, text = self.run_stage("create-account")                                # dry run still shows the history
+        self.assertEqual(code, 0); self.assertIn("UNRESOLVED", text); self.assertIn("DRY RUN", text)
+        code, text = self.go("create-account")                                       # execute without acknowledgement: refused
+        self.assertEqual((code, self.chain.calls), (1, [])); self.assertIn("--acknowledge-ambiguous-attempt", text); self.assertIn("shows no account", text)
+        code, text = self.run_stage("create-account", "--execute", "--confirm", "bbdemo-teedor.testnet", "--acknowledge-ambiguous-attempt")
+        self.assertEqual((code, len(self.chain.calls)), (0, 1))                      # a deliberate, acknowledged second attempt: one call
+
+    def test_DD41_the_on_chain_account_state_is_checked_before_any_further_attempt_even_when_acknowledged(self):
+        self.prepared(); self.chain.mode["create"] = "timeout_lost"
+        self.assertEqual(self.go("create-account")[0], 2); self.chain.calls.clear()
+        self.chain.accounts["bbdemo-teedor.testnet"] = {"amount": 2 * YOCTO, "code_hash": dd.ZERO_CODE_HASH}   # the faucet landed late
+        code, text = self.run_stage("create-account", "--execute", "--confirm", "bbdemo-teedor.testnet", "--acknowledge-ambiguous-attempt")
+        self.assertEqual((code, self.chain.calls), (1, [])); self.assertIn("already exists", text)
+
+    def test_DD42_confirmed_and_unsent_attempts_never_block(self):
+        self.prepared(); self.assertEqual(self.go("create-account")[0], 0)
+        self.assertEqual(self.jr()[0]["outcome"], "confirmed")
+        self.assertEqual(dd.journal_unresolved(self.store, "create-account"), [])
+
+    def test_DD43_an_ambiguous_deploy_blocks_a_second_deploy_without_acknowledgement(self):
+        self.prepared(); self.assertEqual(self.go("create-account")[0], 0); self.chain.calls.clear()
+        self.chain.mode["deploy"] = "timeout_lost"
+        self.assertEqual(self.go("deploy")[0], 2); self.assertEqual(len(self.chain.calls), 1)
+        code, text = self.go("deploy")
+        self.assertEqual((code, len(self.chain.calls)), (1, 1)); self.assertIn("--acknowledge-ambiguous-attempt", text)
+        self.chain.mode["deploy"] = "ok"
+        code, text = self.run_stage("deploy", "--execute", "--confirm", "bbdemo-teedor.testnet", "--acknowledge-ambiguous-attempt")
+        self.assertEqual((code, len(self.chain.calls)), (0, 2))
+
+    def test_DD45_an_attempt_from_before_the_journal_existed_can_be_recorded_offline_and_then_blocks_a_blind_retry(self):
+        self.prepared()                                                              # the owner's first attempt left no journal
+        code, text = self.run_stage("note-prior-attempt", "--note", "UnicodeDecodeError cp1252 + timeout; two lookups: not found")
+        self.assertEqual((code, self.chain.calls, self.chain.rpc_calls), (0, [], 0)); self.assertIn("AMBIGUOUS", text)    # offline: no RPC, no CLI
+        e = self.jr()[0]
+        self.assertEqual((e["stage"], e["outcome"]), ("create-account", "ambiguous")); self.assertIn("owner", e["started_utc"])
+        code, text = self.go("create-account")
+        self.assertEqual((code, self.chain.calls), (1, [])); self.assertIn("--acknowledge-ambiguous-attempt", text)
+        code, text = self.run_stage("create-account", "--execute", "--confirm", "bbdemo-teedor.testnet", "--acknowledge-ambiguous-attempt")
+        self.assertEqual((code, len(self.chain.calls)), (0, 1))                      # deliberate and acknowledged: exactly one call
+        code, text = self.run_stage("note-prior-attempt", "--contract", "bbanchor-teedor.testnet")
+        self.assertEqual(code, 1)                                                     # the evidence account is still protected
+
+    def test_DD44_inspect_is_read_only_and_reports_the_chain_and_the_journal(self):
+        self.prepared(); self.chain.mode["create"] = "timeout_lost"; self.go("create-account"); self.chain.calls.clear()
+        before = sorted(os.listdir(self.store)); journal = pathlib.Path(self.store, dd.JOURNAL_FILE).read_text()
+        code, text = self.run_stage("inspect")
+        self.assertEqual(code, 0); self.assertIn("DOES NOT EXIST", text); self.assertIn("outcome ambiguous", text); self.assertIn("nearblocks.io/address/bbdemo-teedor.testnet", text)
+        self.assertEqual((self.chain.calls, sorted(os.listdir(self.store)), pathlib.Path(self.store, dd.JOURNAL_FILE).read_text()), ([], before, journal))
+        self.chain.accounts["bbdemo-teedor.testnet"] = {"amount": 3 * YOCTO, "code_hash": dd.ZERO_CODE_HASH}
+        code, text = self.run_stage("inspect"); self.assertIn("EXISTS, balance 3.0000 NEAR", text); self.assertIn("no contract yet", text)
+        code, text = self.run_stage("inspect", store=os.path.join(self.tmp.name, "never-prepared"))     # works with no store at all
+        self.assertEqual(code, 0); self.assertIn("no recorded attempts", text)
+
 
 
 if __name__ == "__main__":

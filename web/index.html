@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bit Budget: local privacy-gate demo</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>Bit Budget</h1>
+  <p class="lede"><strong>Every verifier sees only a small answer.</strong> Bit Budget tracks what all of them can collectively learn.</p>
+  <p class="notice" id="notice" role="note"><strong>Local simulation, not a product.</strong> Everything runs only on this computer. The &ldquo;anchor&rdquo; is an in-memory test double (no blockchain), the &ldquo;sealer&rdquo; does not encrypt, and the credential is a mock (no real income verification). All amounts are US dollars ($).</p>
+  <p class="live-banner" id="live-banner" role="note" hidden></p>
+  <noscript><p class="error">This page needs JavaScript. It loads no external scripts.</p></noscript>
+</header>
+<main>
+  <section class="card" id="chain-panel" aria-labelledby="chain-h" hidden>
+    <h2 id="chain-h">On-chain anchor: NEAR testnet</h2>
+    <p class="hint">Anyone can check this without credentials. It is a read-only view of the deployed contract. It cannot submit writes: only this server&rsquo;s signing account can.</p>
+    <dl class="facts">
+      <dt>Contract account</dt><dd id="chain-contract">&ndash;</dd>
+      <dt>Signing account of this server</dt><dd id="chain-signer">&ndash;</dd>
+      <dt>Chain version</dt><dd id="chain-version">&ndash;</dd>
+      <dt>Head digest</dt><dd id="chain-digest">&ndash;</dd>
+      <dt>Scope id</dt><dd id="chain-scope">&ndash;</dd>
+      <dt>Read at</dt><dd id="chain-time">&ndash;</dd>
+    </dl>
+    <p class="row" id="chain-links"></p>
+    <p id="chain-status" role="status" class="hint"></p>
+    <details><summary>Check it yourself without this page</summary><pre class="chainpre" id="chain-verify"></pre></details>
+    <button id="chain-refresh" type="button">Refresh chain head</button>
+  </section>
+
+  <section class="card" id="story" aria-labelledby="story-h">
+    <h2 id="story-h">The idea, with a fixed $120,000 income</h2>
+    <p class="hint">Three verifiers ask yes/no questions of the form &ldquo;is income above X?&rdquo;. The numbers below come from running the real policy engine.</p>
+    <p id="story-status" role="status">Loading the demo from the local engine&hellip;</p>
+    <div class="story-grid">
+      <article class="col" id="story-open" hidden>
+        <h3>Unrestricted</h3>
+        <p class="big" id="open-headline"></p>
+        <p class="hint">Candidates left after each question:</p>
+        <p class="seq" id="open-seq"></p>
+      </article>
+      <article class="col" id="story-gated" hidden>
+        <h3>With Bit Budget</h3>
+        <p class="hint">Left: what the verifier sees. Right: what Bit Budget tracks (never shown to verifiers). Dashed line: the privacy floor.</p>
+        <ol class="steps" id="gated-steps"></ol>
+        <p class="big2" id="gated-summary"></p>
+      </article>
+    </div>
+    <button id="story-run" type="button">Run the demo again</button>
+  </section>
+
+  <section class="card" id="try" aria-labelledby="try-h">
+    <h2 id="try-h">Try it yourself</h2>
+    <div class="panels">
+      <div class="panel" id="owner-panel">
+        <h3>Owner: choose a secret income</h3>
+        <p class="hint">The privacy floor is fixed: at least $10,000 worth of possible incomes must always remain.</p>
+        <form id="create-form" novalidate>
+          <div class="row">
+            <label>Annual income ($) <input id="income" type="number" min="0" max="999999" step="1" value="120000"></label>
+            <button id="create" type="submit">Create session</button>
+          </div>
+          <details><summary>Optional per-verifier limits</summary>
+            <div class="row">
+              <label>K: max informative answers <input id="capK" type="number" min="1" step="1" placeholder="off"></label>
+              <label>R: max requests <input id="capR" type="number" min="1" step="1" placeholder="off"></label>
+            </div>
+          </details>
+        </form>
+        <form id="token-form" novalidate hidden>
+          <div class="row">
+            <label>Operator token (printed on the server console) <input id="op-token" type="password" autocomplete="off"></label>
+            <button id="token-go" type="submit">Show owner view</button>
+          </div>
+        </form>
+        <p id="owner-error" class="error" role="alert"></p>
+      </div>
+
+      <div class="panel" id="verifier-panel">
+        <h3>Verifier&rsquo;s screen</h3>
+        <p class="hint">A verifier sees only YES, NO or REFUSED.</p>
+        <p id="verifier-hint" class="hint">Create a session first (owner panel).</p>
+        <form id="ask-form" novalidate>
+          <div class="row">
+            <label>Verifier <select id="verifier"><option>V1</option><option>V2</option><option>V3</option></select></label>
+            <label>Is income above ($) <input id="threshold" type="number" step="1" value="500000"></label>
+            <button id="ask" type="submit" disabled>Ask</button>
+          </div>
+        </form>
+        <div class="row quick" id="quick">
+          <span class="hint">Try:</span>
+          <button type="button" data-t="9998">9,998</button>
+          <button type="button" data-t="9999">9,999</button>
+          <button type="button" data-t="500000">500,000</button>
+          <button type="button" data-t="989999">989,999</button>
+          <button type="button" data-t="990000">990,000</button>
+        </div>
+        <p id="ask-error" class="error" role="alert"></p>
+        <div class="verdict" id="verdict" role="status"></div>
+        <div class="scroll"><table id="vlog"><thead><tr><th>#</th><th>Verifier</th><th>Asked: income above</th><th>Answer</th></tr></thead><tbody></tbody></table></div>
+      </div>
+    </div>
+
+    <div class="panel" id="auditor-panel">
+      <h3>Owner / auditor screen (never shown to verifiers)</h3>
+      <p class="hint">Demo only: this panel shows the secret and the engine&rsquo;s internal state so you can follow along. Reading it requires the owner token, which the verifier panel never uses.</p>
+      <p id="auditor-empty" class="hint">No session yet.</p>
+      <div id="owner-view" hidden>
+        <p>Session <code id="sid"></code> &middot; secret: <strong id="secret"></strong></p>
+        <div class="bar" id="bar" role="img" aria-label="Range of incomes still possible"><div class="fill" id="barfill"></div></div>
+        <div class="barlabels"><span>$0</span><span>$999,999</span></div>
+        <p>Candidate incomes still possible: <strong id="fsize"></strong> (from <strong id="flo"></strong> to <strong id="fhi"></strong>). Privacy floor: <span id="floor"></span>. Anchor version <span id="ver"></span>. Guessing advantage so far (uniform prior, display only): <span id="adv"></span> bits.</p>
+        <h4>Last query, as the engine decided it</h4>
+        <dl class="facts">
+          <dt>Policy decision</dt><dd id="r-decision">&ndash;</dd>
+          <dt>Candidates before &rarr; after</dt><dd id="r-range">&ndash;</dd>
+          <dt>Committed transition</dt><dd id="r-commit">&ndash;</dd>
+          <dt>Gate matches the policy engine</dt><dd id="r-consistent">&ndash;</dd>
+        </dl>
+        <div class="scroll"><table class="small" id="vtable"><thead><tr><th>Verifier</th><th>Informative answers</th><th>Committed requests</th></tr></thead><tbody></tbody></table></div>
+        <h4>Full log</h4>
+        <div class="scroll"><table id="log"><thead><tr><th>#</th><th>Verifier</th><th>Threshold</th><th>Verifier saw</th><th>Policy decision</th><th>Candidates after</th></tr></thead><tbody></tbody></table></div>
+        <h4>Adversarial demo on a separate copy of this secret</h4>
+        <div class="row">
+          <label>Strategy <select id="strategy"><option value="squeeze">squeeze toward the floor</option><option value="binary">binary search</option></select></label>
+          <button id="attack" type="button" disabled>Run attacker</button>
+        </div>
+        <p id="attack-error" class="error" role="alert"></p>
+        <div id="attack-result" hidden>
+          <p id="attack-base"></p>
+          <p id="attack-gated"></p>
+          <div class="scroll"><table class="small" id="steps"><thead><tr><th>#</th><th>Verifier</th><th>Threshold</th><th>Response</th><th>Candidates after</th></tr></thead><tbody></tbody></table></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>

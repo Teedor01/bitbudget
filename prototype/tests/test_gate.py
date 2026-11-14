@@ -22,6 +22,8 @@ class Core(unittest.TestCase):
                 self.assertGreaterEqual(width(store.iv), POLICY.min_width)
 
     def test_refusal_independent_of_secret(self):
+        # decide() takes no secret; also check end-to-end: same query sequence on 2 secrets -> same refusal pattern
+        # whenever the answers they received were identical so far.
         g1, _, s1 = build(secret=83_250); g2, _, s2 = build(secret=83_251)
         for i, t in enumerate([500_000, 250_000, 125_000, 83_250, 90_000, 85_000, 84_000]):
             r1, r2 = ask(g1, "V1", f"a{i}", t), ask(g2, "V1", f"a{i}", t)
@@ -34,6 +36,8 @@ class Core(unittest.TestCase):
         for i, t in enumerate([500_000, 250_000, 125_000, 60_000]):
             res.append(ask(gate, "V1", f"q{i}", t))
         self.assertTrue(any(r.get("reason") == "ALLOCATION" for r in res))
+        # a different verifier still has its own allocation until the global floor binds
+        # V1 is capped, but the shared floor (not V1's allocation) is what protects the secret globally
         self.assertGreaterEqual(width(store.iv), POLICY.min_width)
 
 class StateIntegrity(unittest.TestCase):
@@ -48,7 +52,7 @@ class StateIntegrity(unittest.TestCase):
         gate, anchor, store = build()
         ask(gate, "V1", "a", 500_000); snap = store.snapshot()
         ask(gate, "V2", "b", 250_000)
-        store.restore(snap)                      
+        store.restore(snap)                      # operator restores stale copy
         r = ask(gate, "V3", "c", 125_000)
         self.assertEqual((r["status"], r["reason"]), ("REFUSED", "STATE_MISMATCH"))
 
@@ -71,11 +75,11 @@ class StateIntegrity(unittest.TestCase):
 
     def test_5_uncertain_commit_then_recover_and_retry(self):
         gate, anchor, store = build()
-        r = ask(gate, "V1", "u1", 500_000, _drop_response=True)    
+        r = ask(gate, "V1", "u1", 500_000, _drop_response=True)    # anchor committed, crash before promote
         self.assertEqual(r["status"], "LOST"); self.assertEqual(anchor.seq, 1)
         self.assertEqual(ask(gate, "V1", "u2", 250_000)["reason"], "RECOVERY_REQUIRED")
         self.assertEqual(gate.recover(), "PROMOTED")
-        r2 = ask(gate, "V1", "u1", 500_000)                         
+        r2 = ask(gate, "V1", "u1", 500_000)                          # client retries same request id
         self.assertTrue(r2["replay"]); self.assertEqual(anchor.seq, 1)
 
     def test_6_request_id_reuse_with_different_query_refused(self):
@@ -99,6 +103,7 @@ def gate1_cred(gate):
     return _recred(gate)
 
 def _recred(gate):
+    # rebuild an equivalent valid credential object for the second worker (same cred_id/value)
     import hmac, hashlib
     base = cred.Credential(gate.cred_id, "annual_income_usd", gate._secret, "USD", cred.ISSUER)
     tag = hmac.new(ISSUER_KEY, cred._body(base), hashlib.sha256).hexdigest()

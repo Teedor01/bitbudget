@@ -29,7 +29,7 @@ def adaptive_attack(query_fn, lo, hi, W, rng, strategy="squeeze", max_queries=30
             raise ValueError(strategy)
         progressed = False
         for t in cands:
-            if not (a <= t < b):             
+            if not (a <= t < b):            
                 continue
             r = query_fn(t)
             if r is None:

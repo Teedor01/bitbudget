@@ -1,0 +1,19 @@
+# PRIOR_ART.md
+
+**Phase A research, October 26, 2026**
+
+I looked for existing work that overlaps with Bit Budget. This is a preliminary review, not a full literature or patent analysis.
+
+**Evidence labels:** V = read in a retrieved source; M = from my memory, not re-verified; U = not found or unverified.
+
+| # | Source | Existing work and overlap | What differs / significance |
+|---|---|---|---|
+| 1 | **OCELOT**, Xie & Li, [arXiv:2606.12341](https://arxiv.org/abs/2606.12341), June 10, 2026. [Summary](https://pith.science/paper/2606.12341) | **High overlap.** Uses a runtime mediator and tamper-evident ledger to track cumulative information leakage across agent interactions. | Bit Budget focuses on one numeric attribute, exact threshold answers, and a closed-form leakage rule. The core idea of cumulative disclosure budgeting is not novel. |
+| 2 | **DP-MemView**, [arXiv:2608.03130](https://arxiv.org/pdf/2608.03130) | Tracks cumulative attribute leakage from repeated LLM-agent memory releases and applies differential privacy accounting. | Uses noisy releases and DP guarantees rather than exact answers about a credential-backed attribute. |
+| 3 | **WFA Privacy Budget Manager**, [documentation](https://www.mintlify.com/world-federation-of-advertisers/cross-media-measurement/components/privacy-budget-manager) | Uses a cumulative budget ledger, rejects over-budget queries, and maintains an audit log. | Focuses on aggregate measurement data and noise, not exact disclosures about one individual. |
+| 4 | **US Patent 10,977,384**, *Hardware protection for differential privacy*. [Patent](https://image-ppubs.uspto.gov/dirsearch-public/print/downloadPdf/10977384) | **High mechanism overlap.** Describes a trusted environment maintaining a query ledger, tracking remaining privacy budget, and potentially using a blockchain ledger. | Our setting involves exact threshold answers and one credential-bound secret. I have not reviewed the patent claims, so this is not a freedom-to-operate assessment. |
+| 5 | **Query auditing / simulatable auditing**, including work by Kleinberg, Papadimitriou and Raghavan, and Kenthapadi, Mishra and Nissim. | **M, not retrieved.** The relevant idea is that denial decisions depend on previous queries and answers, so refusals do not reveal additional information. | Bit Budget applies this idea to interval-based threshold queries across verifiers. The references still need verification. |
+| 6 | **Selective disclosure and ZK predicates**, including [SDAS](https://arxiv.org/pdf/2606.20760) and [this poster](https://arxiv.org/abs/2602.18539). | Allows users to prove predicates without revealing underlying attributes. | I did not find cumulative cross-verifier leakage accounting in the retrieved excerpts. Stateless proofs may still allow repeated queries to narrow down a secret. This possible gap needs full-paper verification. |
+| 7 | **Differential privacy in agents**, [arXiv:2603.17902](https://arxiv.org/pdf/2603.17902) | Studies probabilistic privacy guarantees for multi-agent LLM leakage. | Related threat model, but a different privacy guarantee. |
+| 8 | **TEE state continuity**, including ElephantDP (CCS 2024). | **U.** A collaborator raised this as related work, but I did not retrieve the source. | Relevant to rollback, replay, and fork resistance. I need to read it before making claims about our approach. |
+| 9 | **Products combining user-owned secrets, cross-verifier disclosure accounting, and per-disclosure payment.** | I found none in approximately six searches. | This is not evidence of novelty. Absence of search results does not establish that no such product exists. |

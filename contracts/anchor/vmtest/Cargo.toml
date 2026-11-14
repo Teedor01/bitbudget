@@ -1,0 +1,15 @@
+# Executes the COMPILED anchor .wasm inside the real nearcore VM (near-vm-runner, wasmtime) with a mocked
+# external (in-memory storage). This is NOT a NEAR network: no consensus, no real protocol config of testnet.
+[package]
+name = "bitbudget-anchor-vmtest"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+near-vm-runner = "=0.38.0"
+near-parameters = "=0.38.0"
+near-primitives-core = "=0.38.0"
+serde_json = "1"
+
+[workspace]

@@ -7,7 +7,7 @@ class CasResult(Enum):
     CONFLICT = "CONFLICT"
     UNAUTHORIZED = "UNAUTHORIZED"
     MALFORMED = "MALFORMED"
-    UNKNOWN = "UNKNOWN"         
+    UNKNOWN = "UNKNOWN"          
 
 
 class AnchorUnavailable(Exception):

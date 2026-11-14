@@ -1,0 +1,73 @@
+# Compiles and tests the NEAR anchor contract. No secrets, no paid services. Runs on GitHub-hosted runners.
+# Trigger manually: GitHub -> Actions -> "contract" -> Run workflow (workflow_dispatch). Also runs on push/PR.
+name: contract
+on:
+  workflow_dispatch:
+  push:
+    paths: ["contracts/**", ".github/workflows/contract.yml"]
+  pull_request:
+    paths: ["contracts/**", ".github/workflows/contract.yml"]
+permissions:
+  contents: read
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 1.95.0 = near-sdk 5.30.0's declared rust-version (MSRV); 1.99.1 = the version verified by the author.
+        toolchain: ["1.95.0", "1.99.1"]
+    env:
+      RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}   # overrides contracts/anchor/rust-toolchain.toml so the matrix is real
+    defaults:
+      run:
+        working-directory: contracts/anchor
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8   # master at time of writing
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            contracts/anchor
+            contracts/anchor/vmtest
+      - name: Unit tests (native, near-sdk mocked blockchain)
+        run: cargo test --locked
+      - name: Build wasm (release)
+        run: cargo build --locked --target wasm32-unknown-unknown --release
+      - name: Wasm size and hash
+        run: |
+          f=target/wasm32-unknown-unknown/release/bitbudget_anchor.wasm
+          ls -l "$f"; sha256sum "$f"
+      - name: Execute the compiled wasm in the nearcore VM (near-vm-runner)
+        working-directory: contracts/anchor/vmtest
+        run: cargo test --locked -- --nocapture
+      - uses: actions/upload-artifact@v7
+        if: matrix.toolchain == '1.99.1'
+        with:
+          name: bitbudget_anchor.wasm
+          path: contracts/anchor/target/wasm32-unknown-unknown/release/bitbudget_anchor.wasm
+          if-no-files-found: error
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: python3 -m unittest discover -s tests -t .
+  cli-syntax:
+    # Checks every near-cli-rs command line this repo documents/uses against the real v0.30.1 binary (syntax only).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Download near-cli-rs v0.30.1
+        run: |
+          curl -sSL -o near.tgz https://github.com/near/near-cli-rs/releases/download/v0.30.1/near-cli-rs-x86_64-unknown-linux-gnu.tar.gz
+          tar xzf near.tgz
+      - run: python3 scripts/check_cli_syntax.py --near ./near-cli-rs-x86_64-unknown-linux-gnu/near

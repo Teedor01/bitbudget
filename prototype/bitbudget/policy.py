@@ -30,13 +30,13 @@ def outcomes(iv, t):
 def decide(policy: Policy, iv, t: int, verifier_bits_used: float):
     """Return (allowed, reason, worst_case_cost_bits). Pure function; no secret input."""
     yes, no = outcomes(iv, t)
-    if yes is None or no is None:           
+    if yes is None or no is None:           # answer already determined by public state
         return True, "DETERMINED", 0.0
     w0 = width(iv)
     for o in (yes, no):
         if width(o) < policy.min_width:
             return False, "FLOOR", 0.0
-    cost = max(math.log2(w0 / width(o)) for o in (yes, no))   
+    cost = max(math.log2(w0 / width(o)) for o in (yes, no))   # worst case, secret-independent
     if verifier_bits_used + cost > policy.per_verifier_bits + 1e-12:
         return False, "ALLOCATION", cost
     return True, "OK", cost

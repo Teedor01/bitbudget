@@ -67,7 +67,7 @@ class PolicyClient:
         d, attempts, resp = req.digest(), 0, None
         while attempts < self.max:
             attempts += 1
-            resp = g.handle(req)                        
+            resp = g.handle(req)                         
             if resp.kind in ("ANSWER", "REFUSED"):       
                 self.pending, self.nonce = None, req.nonce + 1
                 return ClientResult(resp.kind, resp, attempts)
@@ -75,7 +75,7 @@ class PolicyClient:
                 continue
             complete, mine = self.obs.view(self.vid)     
             if any(n == req.nonce and dd == d for n, dd in mine):
-                continue                               
+                continue                                
             nxt = (max((n for n, _ in mine), default=0) + 1) if complete else None
             if any(n == req.nonce and dd != d for n, dd in mine):
                 self.pending = None
